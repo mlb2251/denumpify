@@ -12,6 +12,11 @@ import os
 from selenium import webdriver
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.chrome.options import Options
+from pathlib import Path
+
+
+class UnusualTrafficException(Exception):
+    pass
 
 
 def get_numpy_fns():
@@ -61,6 +66,13 @@ class Driver:
         self.driver.implicitly_wait(1)
         print("initialized chrome driver")
 
+    def check_unusual_traffic(self, raised=True):
+        if 'Our systems have detected unusual traffic from your computer network' in self.driver.page_source:
+            if raised:
+                raise UnusualTrafficException
+            return True
+        return False
+
     def get_num_results(self, query):
         """
         Returns number of google search results for a query like "test" or "\"test\"" (latter would be a verbatim search)
@@ -68,10 +80,9 @@ class Driver:
         print("searching google")
         self.driver.get(f"http://www.google.com/search?q={query}")
 
+        self.check_unusual_traffic()
+
         print("finding number of results")
-        if 'Our systems have detected unusual traffic from your computer network' in self.driver.page_source:
-            print("fuck")
-            breakpoint()
         results = self.driver.find_element_by_id('result-stats').text
         # 'About 4,150,000,000 results (0.59 seconds) '
         _about, num, _results, *ignore_rest = results.split(' ')
@@ -89,15 +100,28 @@ def main():
 
     names = [f.__name__ for f in fns]
 
-    freq = dict()
+    if (p := Path('saved/freq.dict')).exists():
+        print(f'loading existing {p}')
+        freq = pickle.load(p)
+    else:
+        print("creating new freq")
+        freq = dict()
 
     for name in names:
+        if name in freq:
+            continue  # eg when loading from a partially complete freq dict
         print(name)
         query = f'"np.{name}"'
-        num_results = driver.get_num_results(query)
+        try:
+            num_results = driver.get_num_results(query)
+        except UnusualTrafficException:
+            print("Unusual traffice error, saving...")
+            pickle.dump(freq, 'saved/freq.dict')
         print(f"-> {num_results}")
         freq[name] = num_results
 
+    print("saving results...")
+    pickle.dump(freq, 'saved/freq.dict')
     print("ay")
 
     # req = requests.get('http://www.google.com/search',
@@ -112,10 +136,6 @@ def main():
     # with open('out.html', 'w') as f:
     #     f.write(html)
 
-    print(soup.find('div', dict(id='result-stats')).text)
-
-    for f in fns:
-        p = Program(f, f.__name__)
     return
 
 
