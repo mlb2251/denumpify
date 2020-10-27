@@ -92,17 +92,30 @@ class Driver:
         return num_results
 
 
+def save(obj, path):
+    with open(path, 'wb') as f:
+        pickle.dump(obj, f)
+
+
+def load(path):
+    with open(path, 'rb') as f:
+        return pickle.load(f)
+
+
 def main():
-    driver = Driver(headless=False)
+    driver = Driver(headless=True)
 
     fns = get_numpy_fns()
     print(f"got {len(fns)} numpy fns")
 
     names = [f.__name__ for f in fns]
 
-    if (p := Path('saved/freq.dict')).exists():
-        print(f'loading existing {p}')
-        freq = pickle.load(p)
+    freq_path = Path('saved/freq.dict')
+
+    if freq_path.exists():
+        print(f'loading existing {freq_path}')
+        freq = load(freq_path)
+        print(f"continue at fn number {len(freq)}")
     else:
         print("creating new freq")
         freq = dict()
@@ -116,12 +129,16 @@ def main():
             num_results = driver.get_num_results(query)
         except UnusualTrafficException:
             print("Unusual traffice error, saving...")
-            pickle.dump(freq, 'saved/freq.dict')
+            save(freq, freq_path)
+            driver.driver.close()
+            sys.exit(0)
         print(f"-> {num_results}")
         freq[name] = num_results
 
     print("saving results...")
-    pickle.dump(freq, 'saved/freq.dict')
+    save(freq, freq_path)
+    driver.driver.close()
+    sys.exit(0)
     print("ay")
 
     # req = requests.get('http://www.google.com/search',
@@ -140,5 +157,5 @@ def main():
 
 
 if __name__ == '__main__':
-    with mlb.debug(False):
+    with mlb.debug(True):
         main()
