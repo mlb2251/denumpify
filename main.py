@@ -86,6 +86,10 @@ class Driver:
         results = self.driver.find_element_by_id('result-stats').text
         # 'About 4,150,000,000 results (0.59 seconds) '
         _about, num, _results, *ignore_rest = results.split(' ')
+        if _about != 'About':  # edge case where it just says "10 results" instead of "About 10 results"
+            assert _about.isdigit()
+            num_results = int(_about.replace(',', ''))
+            return num_results
         assert _about == 'About'
         assert _results == 'results'
         num_results = int(num.replace(',', ''))
