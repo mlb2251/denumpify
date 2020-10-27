@@ -1,18 +1,33 @@
+from pathlib import Path
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.keys import Keys
+from selenium import webdriver
+import os
+import sys
+import selenium
+import argparse
+from bs4 import BeautifulSoup
+import requests
 import mlb
 import numpy as np
 from collections import defaultdict
 import pickle
+import matplotlib.pyplot as plt
+import seaborn as sns
+sns.set()
+plt.ion()
 
-import requests
-from bs4 import BeautifulSoup
-import argparse
-import selenium
-import sys
-import os
-from selenium import webdriver
-from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.chrome.options import Options
-from pathlib import Path
+
+parser = argparse.ArgumentParser(description='Denumpify')
+parser.add_argument('mode', nargs='?',
+                    choices=['synth', 'freq', 'plot'],
+                    default='synth',
+                    help='mode to run in [default: synth]')
+parser.add_argument('--no-debug', action='store_true',
+                    help='disable mlb.debug')
+parser.add_argument('--no-headless', action='store_true',
+                    help='disable headless browsing')
+cfg = parser.parse_args()
 
 
 class UnusualTrafficException(Exception):
@@ -106,15 +121,10 @@ def load(path):
         return pickle.load(f)
 
 
-def main():
-    driver = Driver(headless=True)
-
-    fns = get_numpy_fns()
-    print(f"got {len(fns)} numpy fns")
-
-    names = [f.__name__ for f in fns]
-
+def get_freqs(fns, cfg):
+    driver = Driver(headless=(not cfg.no_headless))
     freq_path = Path('saved/freq.dict')
+    names = [f.__name__ for f in fns]
 
     if freq_path.exists():
         print(f'loading existing {freq_path}')
@@ -142,24 +152,42 @@ def main():
     print("saving results...")
     save(freq, freq_path)
     driver.driver.close()
-    sys.exit(0)
-    print("ay")
 
-    # req = requests.get('http://www.google.com/search',
-    #                    params=dict(q='\'test\'',
-    #                                aqs='chrome.0.69i59j69i57j69i59j69i60j69i61j69i60l3.1924j0j7',
-    #                                sourceid='chrome',
-    #                                ie='UTF-8')
-    #                    )
-    # soup = BeautifulSoup(req.text)
 
-    # html = soup.prettify()
-    # with open('out.html', 'w') as f:
-    #     f.write(html)
+def synth(fns, cfg):
+    pass
 
-    return
+
+def main():
+    fns = get_numpy_fns()
+    print(f"got {len(fns)} numpy fns")
+
+    if cfg.mode == 'freq':
+        get_freqs(fns, cfg)
+    elif cfg.mode == 'plot':
+        freq_path = Path('saved/freq.dict')
+        # f, ax = plt.subplots(figsize=(6, 15))
+        freq = load(freq_path)
+        tot = sum(freq.values())
+        data = [(name, count/tot*100) for name, count in freq.items()]
+        data.sort(key=(lambda x: -x[1]))
+        data = data[:40]
+
+        xs = [x[0] for x in data]
+        ys = [x[1] for x in data]
+        sns.barplot(x=ys, y=xs)
+
+        # ax.set(xlim=(0, 24), ylabel="",
+        #        xlabel="Automobile collisions per billion miles")
+        plt.xlabel("Search results (percent)")
+        plt.show()
+        breakpoint()
+    elif cfg.mode == 'synth':
+        synth(fns, cfg)
+    else:
+        raise ValueError(cfg.mode)
 
 
 if __name__ == '__main__':
-    with mlb.debug(True):
+    with mlb.debug((not cfg.no_debug)):
         main()
