@@ -14,6 +14,9 @@ from collections import defaultdict
 import pickle
 import matplotlib.pyplot as plt
 import seaborn as sns
+
+from program import *
+
 sns.set()
 plt.ion()
 
@@ -155,7 +158,33 @@ def get_freqs(fns, cfg):
 
 
 def synth(fns, cfg):
-    pass
+
+    # set up the prims
+
+    names = [f.__name__ for f in fns]
+    prims = []
+    for name,fn in zip(names,fns):
+        prims.append(Prim(name,fn,TFunc(1)))
+
+    prims += [Prim(str(i), Const(i), TVal()) for i in range(-1,2)]
+    prims += [Prim(name, Var(name), TVal()) for name in ('x','y')]
+
+    funcs = {p for p in prims if p.is_func}
+    non_funcs = {p for p in prims if not p.is_func}
+
+    print("bottom upping")
+    # bottom up
+    for _ in range(1):
+        to_add = set()
+        for f in funcs:
+            for nf in non_funcs:
+                to_add.add(f(nf))
+                print(len(to_add))
+        non_funcs |= to_add
+        
+
+
+    return
 
 
 def main():

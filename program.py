@@ -3,47 +3,69 @@
 class Expr:
     pass
 
-
-class Application(Expr):
+class App(Expr):
     def __init__(self, fn, args):
         self.fn = fn
         self.args = args
 
-    def __call__(self, *args):
-        self.fn.val([arg])
+        assert self.fn.is_func
+        assert len(self.args) == self.fn.tp.argc
+    def eval(self,env:dict):
+        self.fn.val([arg.eval(env) for arg in self.args])
+    def __repr__(self):
+        args = ','.join([repr(arg) for arg in self.args])
+        return  f'{self.fn}({args})'
 
 
-class Index:
-    def __init__(self, i):
-        self.i = i
-
-
-class Primitive:
-    def __init__(self, fn, argc, name=None):
-        if name is None:
-            if hasattr(fn, '__name__'):
-                name = fn.__name__
-            else:
-                name = 'anon'
-
-        self.val = val
+class Var(Expr):
+    def __init__(self, name:str):
         self.name = name
-        self.argc = argc
-        # self.complete = (self.argc == 0)
-        # self.args = None
+    def eval(self,env:dict):
+        return env[self.name]
+    def __repr__(self):
+        return self.name
+
+class Const(Expr):
+    def __init__(self,val):
+        self.val = val
+    def eval(self,env:dict):
+        return self.val
+    def __repr__(self):
+        return repr(self.val)
+
+class Prim:
+    def __init__(self, name, val, tp):
+        self.name = name
+        self.val = val
+        self.tp = tp
+
+    
+    @property
+    def is_func(self):
+        return isinstance(self.tp,TFunc)
 
     def __call__(self, *args):
-        if len(args) != self.argc:
-            raise ValueError(
-                f'wrong number of arguments to fn {self.name}. Expected {self.argc}, Got {len(args)}')
-        # if self.complete:
-        #     raise ValueError(
-        #         f'doesnt make sense to apply function when expression doesnt take any args or has already been applied to args: {self.name}')
+        if self.is_func:
+            return App(self, args)
+        return Const(self)
+    def __repr__(self):
+        return self.name
 
-        # self.args = args
-        # self.complete = True
-        expr = Application(self, args)
-        return expr
+
+class Type:
+    pass
+
+class TAny(Type):
+    pass
+
+class TFunc(Type):
+    def __init__(self,argc):
+        self.argc = argc
+def tfunc(*args, **kwargs):
+    return TFunc(*args, **kwargs)
+
+class TVal(Type):
+    pass
 
 
 """
