@@ -1,8 +1,14 @@
 
 
 class Expr:
-    def __init__(self,from_prim=None):
+    def __init__(self,ll=None,from_prim=None):
+        if ll is None and from_prim is not None:
+            ll = from_prim.prior
+
         self.prim = from_prim
+        self.ll = ll
+
+        # eval stuff
         self._eval_envs = []
         self._eval_vals = []
         self._saved_size = None
@@ -95,11 +101,12 @@ class Const(Expr):
 
 
 class Prim:
-    def __init__(self, name, val, tp):
+    def __init__(self, name, val, tp, prior=0):
         self.name = name
         self.val = val
         self.tp = tp
         self.id = name
+        self.prior = prior
     
     @property
     def is_func(self):
@@ -116,7 +123,8 @@ class PrimVar(Prim):
         return Var(self.val, from_prim=self)
 class PrimFunc(Prim):
     def __call__(self, *args):
-        return App(self, args, from_prim=self)
+        ll = self.prior + sum([arg.ll for arg in args]) if self.prior is not None else None
+        return App(self, args, ll=ll, from_prim=self)
 
 
 class Type:
