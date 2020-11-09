@@ -1,3 +1,5 @@
+import contextlib
+import os
 from pathlib import Path
 import numpy as np
 from program import *
@@ -6,6 +8,7 @@ from collections import defaultdict
 from util import *
 from typing import Any
 from dataclasses import dataclass, field
+from tqdm import tqdm
 
 from queue import PriorityQueue
 
@@ -21,8 +24,8 @@ def pre_synth(fns,cfg):
     freq = load(freq_path)
     tot = sum(freq.values())
     priors = {name: count/tot for name, count in freq.items()}
-    priors['_var'] = 1
-    priors['_const'] = 1
+    priors['_var'] = .2
+    priors['_const'] = .2
 
     # renormalize now that var/const are added and also convert to log
     tot = sum(priors.values())
@@ -65,27 +68,33 @@ def thunkify(fns,cfg):
 
     heap = PriorityQueue()
     heap.put(p.heapify())
-    found = [p]
 
 
-    for _ in range(100):
+    print = tqdm.write
+    for _ in tqdm(range(1000), disable=True):
         base_p = heap.get().p
+        if base_p.deleted:
+            continue
         print(f'expanding {base_p}')
         ps = base_p.expand()
         if len(ps) == p.search_state.n:
             heap.put(base_p.heapify()) # return it to the heap bc there might be more expansions
         for p in ps:
-            found.append(p)
             heap.put(p.heapify())
             print(f'\t{p}')
+    
+    results = [p for p in search_state.seen_stack_states.values() if len(p.stack_state) == 1]
+    for res in results:
+        print(str(res))
+
 
 class SearchState:
     def __init__(self, steps:list, n:int, env:dict):
         self.steps = steps
         self.n = n
         self.env = env
-        self.seen_stack_states = set()
-        self.max_argc = 2
+        self.seen_stack_states = {} # {hashed_state->StackProgram}
+        self.max_argc = 5
 
 
 class StackProgram:
@@ -101,6 +110,7 @@ class StackProgram:
         self.stack_state = stack_state
         self.steps = search_state.steps # list of Steps, shared globally
         self.idx = 0
+        self.deleted = False
     def expand(self,n=None):
         """
         Get the next `n` (or fewer) programs obtained by appending a single Step to this program.
@@ -115,34 +125,46 @@ class StackProgram:
         while self.idx < len(self.steps):
             step = self.steps[self.idx]
             try:
-                stack_state = self.run(step)
+                p = self.take_step(step)
             except ProgramFail:
                 self.idx += 1
                 continue
-            p = StackProgram(
-                p=(*self.p,step), # append to tuple
-                search_state=self.search_state,
-                ll=self.ll + step.prior,
-                stack_state=stack_state
-            )
             res.append(p)
             self.idx += 1
             if len(res) >= n:
                 break
         return res # a list of zero or more StackProgram
-    def run(self, step):
+    def take_step(self, step):
         """ 
         Run the program consisting of `self` with `step` appended to it and return result
         May raise ProgramFail
         """
         stack_state = step(self.stack_state, self.search_state.env)
+        # reject if stack has too many items (heuristic)
         if len(stack_state) > self.search_state.max_argc:
             raise ProgramFail("global max argc exceeded")
+        # hash the state and add it to the list of seen states
+
+        new_ll = self.ll + step.prior
+
         hashable_state = str(stack_state) if not hashable(stack_state) else stack_state
         if hashable_state in self.search_state.seen_stack_states:
-            raise ProgramFail("already seen this stack state")
-        self.search_state.seen_stack_states.add(hashable_state)
-        return stack_state
+            if self.search_state.seen_stack_states[hashable_state].ll >= new_ll:
+                # found this stack state previously and ll was higher
+                raise ProgramFail("already seen this stack state")
+            # found this stack state previously but ll was lower so we should delete the old one
+            # (note that the new one will be added to the dict later by expand())
+            self.search_state.seen_stack_states[hashable_state].deleted = True
+
+        # we did it! This is a great new program and we can initialize it and return it!
+        p = StackProgram(
+            p=(*self.p,step), # append to tuple
+            search_state=self.search_state,
+            ll=new_ll,
+            stack_state=stack_state
+        )
+        self.search_state.seen_stack_states[hashable_state] = p
+        return p
     def __repr__(self):
         stack_state = repr(self.stack_state).replace('\n','').replace(' ','').replace('\t','')
         stack_state = mlb.mk_blue(stack_state)
@@ -192,10 +214,12 @@ class FuncStep(Step):
         if len(stack_state) < self.argc:
             raise ProgramFail(f'argc mismatch: expected {self.argc} got {len(stack_state)}')
         # apply function to the last `argc` things on the stack, leaving everything before that unchanged
-        try:
-            res = self.val(*stack_state[-self.argc:])
-        except:
-            raise ProgramFail(f'crash during execution')
+        with contextlib.redirect_stdout(os.devnull):
+            with contextlib.redirect_stderr(os.devnull):
+                try:
+                    res = self.val(*stack_state[-self.argc:])
+                except:
+                    raise ProgramFail(f'crash during execution')
         return (*stack_state[:-self.argc], res)
 
 class ConstStep(Step):
