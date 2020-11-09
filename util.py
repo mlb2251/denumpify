@@ -1,5 +1,18 @@
 import pickle
 import numpy as np
+from collections.abc import Hashable
+
+
+def hashable(x):
+    """
+    methods like isinstance(x,Hashable) fail in cases like x=(3,[])
+    so we do this instead
+    """
+    try:
+        hash(x)
+        return True
+    except:
+        return False
 
 def save(obj, path):
     with open(path, 'wb') as f:

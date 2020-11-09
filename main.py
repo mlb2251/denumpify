@@ -56,7 +56,8 @@ def main():
         plt.show()
         breakpoint()
     elif cfg.mode == 'synth':
-        synth(fns, cfg)
+        #synth(fns, cfg)
+        thunkify(fns,cfg)
     else:
         raise ValueError(cfg.mode)
 
