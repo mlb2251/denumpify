@@ -9,11 +9,46 @@ from util import *
 from typing import Any
 from dataclasses import dataclass, field
 from tqdm import tqdm
+import inspect
 
 from queue import PriorityQueue
 
 class ProgramFail(Exception): pass
 
+class FunctionInfo:
+    stats = defaultdict(int)
+    def __init__(self, fn):
+        self.fn = fn
+        self.name = fn.__name__
+        self.description = fn.__doc__
+
+        # None indicates we don't know
+        self.has_axis = None
+        self.has_keepdims = None
+        self.argc = None
+
+        try:
+            self.params = inspect.signature(fn).parameters
+        except ValueError:
+            self.params = None
+            print(f"can't find signature for {self.name}")
+        
+        # see what we can learn from inspect.signature()
+        if self.params is not None:
+            self.argc = 0
+            self.has_axis = False
+            self.has_keepdims = False
+            for name,p in self.params.items():
+                self.stats[name] += 1
+                if name == 'axis':
+                    self.has_axis = True
+                if name == 'keepdims':
+                    self.has_keepdims = True
+                if p.kind == p.POSITIONAL_OR_KEYWORD:
+                    if p.default is p.empty:
+                        self.argc += 1 # required argument since it has no default
+                else:
+                    print(f"ignoring unusual param: {self.name}() has arg `{name}` of kind '{p.kind.description}'")
 
 def pre_synth(fns,cfg):
     consts = [-1,0,1]
@@ -31,17 +66,24 @@ def pre_synth(fns,cfg):
     tot = sum(priors.values())
     priors = {name: np.log(p/tot) for name, p in priors.items()}
 
+    fns = [FunctionInfo(f) for f in fns]
 
-    names = [f.__name__ for f in fns]
+    counts = [(name,count) for name,count in FunctionInfo.stats.items()]
+    counts.sort(key=lambda x: x[1], reverse=True)
+    print('arg name frequencies:')
+    for name,count in counts:
+        if count < 5:
+            continue
+        print(f'\t {name}: {count}')
 
-    return priors,names,consts,vars
+    return priors,consts,vars,fns
 
 
 def thunkify(fns,cfg):
-    priors,names,consts,vars = pre_synth(fns,cfg)
+    priors,consts,vars,fns = pre_synth(fns,cfg)
 
 
-    steps = [FuncStep(f, priors[f.__name__], f.__name__) for f in fns]
+    steps = [FuncStep(f, priors[f.name]) for f in fns]
     steps += [ConstStep(x, priors['_const'], str(x)) for x in consts]
     steps += [VarStep(x, priors['_var'], str(x)) for x in vars]
 
@@ -51,7 +93,7 @@ def thunkify(fns,cfg):
 
     env = {
         'x':np.ones((2,3)),
-        'y':0,
+        'y':np.array([[1,2,3],[4,5,6]]),
     }
     search_state = SearchState(
                             steps,
@@ -71,7 +113,7 @@ def thunkify(fns,cfg):
 
 
     print = tqdm.write
-    for _ in tqdm(range(1000), disable=True):
+    for _ in tqdm(range(2000), disable=True):
         base_p = heap.get().p
         if base_p.deleted:
             continue
@@ -80,7 +122,8 @@ def thunkify(fns,cfg):
         if len(ps) == p.search_state.n:
             heap.put(base_p.heapify()) # return it to the heap bc there might be more expansions
         for p in ps:
-            heap.put(p.heapify())
+            if len(p.p) < search_state.max_program_size:
+                heap.put(p.heapify()) # only use as a potential parent program if its small enough
             print(f'\t{p}')
     
     results = [p for p in search_state.seen_stack_states.values() if len(p.stack_state) == 1]
@@ -94,7 +137,8 @@ class SearchState:
         self.n = n
         self.env = env
         self.seen_stack_states = {} # {hashed_state->StackProgram}
-        self.max_argc = 5
+        self.max_stack_size = 3
+        self.max_program_size = 3
 
 
 class StackProgram:
@@ -111,6 +155,14 @@ class StackProgram:
         self.steps = search_state.steps # list of Steps, shared globally
         self.idx = 0
         self.deleted = False
+    @property
+    def ll_upperbound(self):
+        """
+        upper bound on the ll of any child that could come from expand()
+        """
+        if self.idx >= len(self.steps):
+            return -np.inf # there are no more children
+        return self.ll + self.steps[self.idx].prior
     def expand(self,n=None):
         """
         Get the next `n` (or fewer) programs obtained by appending a single Step to this program.
@@ -139,21 +191,21 @@ class StackProgram:
         Run the program consisting of `self` with `step` appended to it and return result
         May raise ProgramFail
         """
-        stack_state = step(self.stack_state, self.search_state.env)
+        stack_state, argc = step(self.stack_state, self.search_state.env)
         # reject if stack has too many items (heuristic)
-        if len(stack_state) > self.search_state.max_argc:
-            raise ProgramFail("global max argc exceeded")
+        if len(stack_state) > self.search_state.max_stack_size:
+            raise ProgramFail("global max stacksize exceeded")
         # hash the state and add it to the list of seen states
 
         new_ll = self.ll + step.prior
 
-        hashable_state = str(stack_state) if not hashable(stack_state) else stack_state
+        hashable_state = make_hashable(stack_state)
+            
         if hashable_state in self.search_state.seen_stack_states:
             if self.search_state.seen_stack_states[hashable_state].ll >= new_ll:
                 # found this stack state previously and ll was higher
                 raise ProgramFail("already seen this stack state")
             # found this stack state previously but ll was lower so we should delete the old one
-            # (note that the new one will be added to the dict later by expand())
             self.search_state.seen_stack_states[hashable_state].deleted = True
 
         # we did it! This is a great new program and we can initialize it and return it!
@@ -166,7 +218,19 @@ class StackProgram:
         self.search_state.seen_stack_states[hashable_state] = p
         return p
     def __repr__(self):
-        stack_state = repr(self.stack_state).replace('\n','').replace(' ','').replace('\t','')
+        try:
+            stack_state = repr(self.stack_state)
+        except TypeError:
+            # rare case
+            stack_state = []
+            for item in self.stack_state:
+                try:
+                    stack_state.append(repr(item))
+                except TypeError:
+                    stack_state.append('[unable to print]')
+            stack_state = '(' + ','.join(stack_state) + ')'
+
+        stack_state = stack_state.replace('\n','').replace(' ','').replace('\t','')
         stack_state = mlb.mk_blue(stack_state)
         return f'{self.p} -> {stack_state} (ll={self.ll:.2f})'
     def heapify(self):
@@ -180,7 +244,7 @@ class StackProgram:
             to make operations like "<" based on self.ll while making operations like "=="
             presumably based on self.p. It just all gets messy so this dataclass makes more sense
         """
-        return HeapItem(prio=-self.ll, p=self)
+        return HeapItem(prio=-self.ll_upperbound, p=self)
 
 
 @dataclass(order=True)
@@ -203,25 +267,36 @@ class Step:
         return self.name
 
 class FuncStep(Step):
-    def __init__(self, val, prior, name, argc=1):
-        super().__init__(val,prior,name)
-        self.argc = argc
+    def __init__(self, fn_info, prior):
+        super().__init__(val=fn_info.fn, prior=prior, name=fn_info.name)
+        self.argc = fn_info.argc
     def __call__(self, stack_state:tuple, env:dict):
         """
         Takes a stack state and returns a new one
         important: dont modify the stack_state list that you are passed
         """
-        if len(stack_state) < self.argc:
+        if self.argc is not None and len(stack_state) < self.argc:
             raise ProgramFail(f'argc mismatch: expected {self.argc} got {len(stack_state)}')
-        # apply function to the last `argc` things on the stack, leaving everything before that unchanged
+            
+        # if argc is not known, try argc=0,1,2,... up to the number of things on the stack (inclusive)
+        if self.argc is not None:
+            argcs = [self.argc]
+        else:
+            argcs = list(range(0,len(stack_state)+1))
+
         with contextlib.redirect_stdout(os.devnull):
             with contextlib.redirect_stderr(os.devnull):
-                try:
-                    res = self.val(*stack_state[-self.argc:])
-                except:
-                    raise ProgramFail(f'crash during execution')
-        return (*stack_state[:-self.argc], res)
 
+                for argc in argcs:
+                    try:
+                        # apply function to the last `argc` things on the stack, leaving everything before that unchanged
+                        res = self.val(*stack_state[-argc:])
+                    except:
+                        continue # program crashed
+                    # if we reach this point the program didnt crash!
+                    return (*stack_state[:argc], res), argc
+                # if we reach this point the program crashed on every attempt
+                raise ProgramFail(f'crash during execution for all argcs attempted')
 class ConstStep(Step):
     def __init__(self, val, prior, name):
         super().__init__(val,prior, name)
@@ -230,7 +305,7 @@ class ConstStep(Step):
         Takes a stack state and returns a new one
         important: dont modify the stack_state list that you are passed
         """
-        return (*stack_state, self.val)
+        return (*stack_state, self.val), 0
 
 class VarStep(Step):
     def __init__(self, val, prior, name):
@@ -240,7 +315,7 @@ class VarStep(Step):
         Takes a stack state and returns a new one
         important: dont modify the stack_state list that you are passed
         """
-        return (*stack_state, env[self.val])
+        return (*stack_state, env[self.val]), 0
 
 
 
