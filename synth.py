@@ -8,8 +8,10 @@ from collections import defaultdict
 from util import *
 from typing import Any
 from dataclasses import dataclass, field
+from copy import deepcopy
 from tqdm import tqdm
 import inspect
+import itertools
 
 from queue import PriorityQueue
 
@@ -25,7 +27,7 @@ class FunctionInfo:
         # None indicates we don't know
         self.has_axis = None
         self.has_keepdims = None
-        self.argc = None
+        self.argcs = None
 
         try:
             self.params = inspect.signature(fn).parameters
@@ -35,7 +37,7 @@ class FunctionInfo:
         
         # see what we can learn from inspect.signature()
         if self.params is not None:
-            self.argc = 0
+            min_argc = 0
             self.has_axis = False
             self.has_keepdims = False
             for name,p in self.params.items():
@@ -46,9 +48,10 @@ class FunctionInfo:
                     self.has_keepdims = True
                 if p.kind == p.POSITIONAL_OR_KEYWORD:
                     if p.default is p.empty:
-                        self.argc += 1 # required argument since it has no default
+                        min_argc += 1 # required argument since it has no default
                 else:
                     print(f"ignoring unusual param: {self.name}() has arg `{name}` of kind '{p.kind.description}'")
+            self.argcs = list(range(min_argc,len(self.params)+1))
 
 def pre_synth(fns,cfg):
     consts = [-1,0,1]
@@ -82,8 +85,12 @@ def pre_synth(fns,cfg):
 def thunkify(fns,cfg):
     priors,consts,vars,fns = pre_synth(fns,cfg)
 
+    steps = []
+    for f in fns:
+        argcs = f.argcs if f.argcs is not None else [0,1,2,3]
+        for argc in argcs:
+            steps.append(FuncStep(f, priors[f.name], argc))
 
-    steps = [FuncStep(f, priors[f.name]) for f in fns]
     steps += [ConstStep(x, priors['_const'], str(x)) for x in consts]
     steps += [VarStep(x, priors['_var'], str(x)) for x in vars]
 
@@ -92,8 +99,8 @@ def thunkify(fns,cfg):
 
 
     env = {
-        'x':lambda:np.ones((2,3)),
-        'y':lambda:np.array([[1,2,3],[4,5,6]]),
+        'x': lambda: np.ones((2,3)),
+        'y': lambda: np.array([[1,2,3],[4,5,6]]),
     }
     search_state = SearchState(
                             steps,
@@ -130,6 +137,7 @@ def thunkify(fns,cfg):
     results.sort(key=lambda p: -p.ll)
     for res in reversed(results):
         print(str(res))
+    print("done")
 
 
 class SearchState:
@@ -244,7 +252,20 @@ class StackState:
     """an immutable stack class. push() and pop() dont do inplace modifications
     """
     def __init__(self, stack: tuple):
-        self.stack = tuple(stack)
+        stack = tuple(stack)
+        # this first deepcopy detatches us from our parent so we cant accidentally modify them
+        # and trigger their need to restore() (which we'd have to warn them about which we cant do)
+        # also its pretty harmless given we're already deepcopying to get our backup copy for restoring
+        self.stack = deepcopy(stack)
+        # this second deepcopy is to handle restoring ourselves when we accidentally
+        # do an inplace modification of ourselves
+        self.stack_backup = deepcopy(stack)
+    def restore(self):
+        if not safe_eq(self.stack,self.stack_backup):
+            # our stack has been modified by some inplace operation! Lets restore the original
+            self.stack = deepcopy(self.stack_backup)
+            return True
+        return False
     def push(self, item):
         stk = (*self.stack,item) # appending to a tuple
         return StackState(stk)
@@ -283,20 +304,7 @@ class StackState:
             return fallback(self.stack)
 
     def __eq__(self, other):
-        def eq(a,b):
-            if type(a) != type(b):
-                return False
-            if isinstance(a,(list,tuple)):
-                if len(a) != len(b):
-                    return False
-                return all([eq(x,y) for x,y in zip(a,b)])
-            if isinstance(a,np.ndarray):
-                return np.array_equal(a,b)
-            try:
-                return bool(a == b)
-            except:
-                return str(a) == str(b)
-        return eq(self.stack,other.stack)
+        return safe_eq(self.stack,other.stack)
     def __repr__(self):
         res = []
         for item in self.stack:
@@ -304,12 +312,28 @@ class StackState:
                 res.append(repr(item))
             except TypeError:
                 res.append('[unable to print]')
+                raise # eh lets set this to raise bc we dont actually want these showing up
         res = '(' + ' || '.join(res) + ')'
-
         res = res.replace('\n','').replace(' ','').replace('\t','')
         res = res.replace('||',' || ')
         return res
 
+def safe_eq(a,b):
+    """
+    a safe version of the "==" operator resilient to the countless numpy bugs and crashes
+    """
+    if type(a) != type(b):
+        return False
+    if isinstance(a,(list,tuple)):
+        if len(a) != len(b):
+            return False
+        return all([safe_eq(x,y) for x,y in zip(a,b)])
+    try:
+        if isinstance(a,np.ndarray):
+            return np.array_equal(a,b)
+        return bool(a == b)
+    except:
+        return str(a) == str(b)
 
 class Step:
     def __init__(self, val, prior, name):
@@ -326,39 +350,35 @@ class Step:
         return self.name
 
 class FuncStep(Step):
-    def __init__(self, fn_info, prior):
-        super().__init__(val=fn_info.fn, prior=prior, name=fn_info.name)
-        self.argc = fn_info.argc
+    def __init__(self, fn_info, prior, argc):
+        name = f'{fn_info.name}.{argc}'
+        super().__init__(val=fn_info.fn, prior=prior, name=name)
+        self.argc = argc
     def __call__(self, stack_state:tuple, env:dict):
         """
         Takes a stack state and returns a new one
         important: dont modify the stack_state list that you are passed
         """
-        if self.argc is not None and len(stack_state) < self.argc:
+        if len(stack_state) < self.argc:
             raise ProgramFail(f'argc mismatch: expected {self.argc} got {len(stack_state)}')
             
-        # if argc is not known, try argc=0,1,2,... up to the number of things on the stack (inclusive)
-        if self.argc is not None:
-            argcs = [self.argc]
-        else:
-            argcs = list(range(0,len(stack_state)+1))
-
         with contextlib.redirect_stdout(os.devnull):
             with contextlib.redirect_stderr(os.devnull):
-
-                for argc in argcs:
-                    stack_state_prefix, args = stack_state.pop(argc)
-                    try:
-                        # apply function to the last `argc` things on the stack, leaving everything before that unchanged
-                        #res = self.val(*stack_state[-argc:])
-                        res = self.val(*args)
-                        repr(res)
-                    except:
-                        continue # program crashed
-                    # if we reach this point the program didnt crash!
-                    return stack_state_prefix.push(res)
-                # if we reach this point the program crashed on every attempt
-                raise ProgramFail(f'crash during execution for all argcs attempted')
+                stack_state_prefix, args = stack_state.pop(self.argc)
+                try:
+                    # apply function to the last `argc` things on the stack, leaving everything before that unchanged
+                    res = self.val(*args)
+                    repr(res) # this crashes sometimes so we want to try it
+                except:
+                    raise ProgramFail(f'crash during execution of program')
+                finally:
+                    # in case of failure, we want to restore the stack state to whatever it originally was even if inplace operations happened
+                    restored1 = stack_state.restore()
+                    restored2 = stack_state_prefix.restore() # I dont think this should be affected but good to be safe in case theres some pointers between items in the tuple. Unsure but this is safer.
+                    if restored1 or restored2:
+                        raise ProgramFail(f'program resulted in an inplace modification')
+                    #str(env['x']()) # *** TEMP just to debug errror
+                return stack_state_prefix.push(res)
 class ConstStep(Step):
     def __init__(self, val, prior, name):
         super().__init__(val,prior, name)

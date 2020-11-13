@@ -64,7 +64,8 @@ def get_numpy_fns():
 
     # ignore ones starting with underscore
     fns = [f for f in fns if not f.__name__.startswith('_')]
-    reject = {'lookfor', 'info', 'source', 'printoptions', 'set_printoptions', }
+    # note: setbufsize causes wild crashes lol
+    reject = {'lookfor', 'info', 'source', 'printoptions', 'set_printoptions','setbufsize', 'seterr', 'seterrcall','set_string_function', 'get_printoptions' }
     fns = [f for f in fns if f.__name__ not in reject]
 
     return fns
