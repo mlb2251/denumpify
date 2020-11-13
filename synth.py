@@ -92,8 +92,8 @@ def thunkify(fns,cfg):
 
 
     env = {
-        'x':np.ones((2,3)),
-        'y':np.array([[1,2,3],[4,5,6]]),
+        'x':lambda:np.ones((2,3)),
+        'y':lambda:np.array([[1,2,3],[4,5,6]]),
     }
     search_state = SearchState(
                             steps,
@@ -105,7 +105,7 @@ def thunkify(fns,cfg):
                 p=(),
                 search_state=search_state,
                 ll=0,
-                stack_state=(),
+                stack_state=StackState(())
                 )
 
     heap = PriorityQueue()
@@ -127,7 +127,8 @@ def thunkify(fns,cfg):
             print(f'\t{p}')
     
     results = [p for p in search_state.seen_stack_states.values() if len(p.stack_state) == 1]
-    for res in results:
+    results.sort(key=lambda p: -p.ll)
+    for res in reversed(results):
         print(str(res))
 
 
@@ -146,7 +147,7 @@ class StackProgram:
                  p:tuple, # program: tuple of Steps
                  search_state:SearchState,
                  ll:float, # log likelihood of this program
-                 stack_state:tuple # stack state after executing this program
+                 stack_state# stack state after executing this program
                  ):
         self.p = p
         self.search_state = search_state
@@ -191,7 +192,7 @@ class StackProgram:
         Run the program consisting of `self` with `step` appended to it and return result
         May raise ProgramFail
         """
-        stack_state, argc = step(self.stack_state, self.search_state.env)
+        stack_state = step(self.stack_state, self.search_state.env)
         # reject if stack has too many items (heuristic)
         if len(stack_state) > self.search_state.max_stack_size:
             raise ProgramFail("global max stacksize exceeded")
@@ -199,14 +200,12 @@ class StackProgram:
 
         new_ll = self.ll + step.prior
 
-        hashable_state = make_hashable(stack_state)
-            
-        if hashable_state in self.search_state.seen_stack_states:
-            if self.search_state.seen_stack_states[hashable_state].ll >= new_ll:
+        if stack_state in self.search_state.seen_stack_states:
+            if self.search_state.seen_stack_states[stack_state].ll >= new_ll:
                 # found this stack state previously and ll was higher
                 raise ProgramFail("already seen this stack state")
             # found this stack state previously but ll was lower so we should delete the old one
-            self.search_state.seen_stack_states[hashable_state].deleted = True
+            self.search_state.seen_stack_states[stack_state].deleted = True
 
         # we did it! This is a great new program and we can initialize it and return it!
         p = StackProgram(
@@ -215,23 +214,11 @@ class StackProgram:
             ll=new_ll,
             stack_state=stack_state
         )
-        self.search_state.seen_stack_states[hashable_state] = p
+        self.search_state.seen_stack_states[stack_state] = p
         return p
     def __repr__(self):
-        try:
-            stack_state = repr(self.stack_state)
-        except TypeError:
-            # rare case
-            stack_state = []
-            for item in self.stack_state:
-                try:
-                    stack_state.append(repr(item))
-                except TypeError:
-                    stack_state.append('[unable to print]')
-            stack_state = '(' + ','.join(stack_state) + ')'
-
-        stack_state = stack_state.replace('\n','').replace(' ','').replace('\t','')
-        stack_state = mlb.mk_blue(stack_state)
+        stack_state = repr(self.stack_state).split('||')
+        stack_state = mlb.mk_green('||').join([mlb.mk_blue(s) for s in stack_state])
         return f'{self.p} -> {stack_state} (ll={self.ll:.2f})'
     def heapify(self):
         """
@@ -249,8 +236,80 @@ class StackProgram:
 
 @dataclass(order=True)
 class HeapItem:
-    prio: int
+    prio: float
     p: StackProgram = field(compare=False)
+
+
+class StackState:
+    """an immutable stack class. push() and pop() dont do inplace modifications
+    """
+    def __init__(self, stack: tuple):
+        self.stack = tuple(stack)
+    def push(self, item):
+        stk = (*self.stack,item) # appending to a tuple
+        return StackState(stk)
+    def pop(self, n):
+        """
+        Return: (unpopped:StackState,popped:tuple)
+        """
+        if n == 0:
+            return self, ()
+        unpopped = self.stack[:-n] # things that arent popped
+        popped = self.stack[-n:] # things that are popped
+        return StackState(unpopped), popped
+    def __len__(self):
+        return len(self.stack)
+    def __hash__(self):
+        """
+        - only req: for two objects if they are equal as defined by
+           __eq__ then they must have the same __hash__ value
+        - hash must be an int
+        - methods like isinstance(tup,Hashable) fail in cases like tup=(3,[])
+            so we have to do the try/except
+        """
+        def fallback(tup):
+            try:
+                return hash(str(tup))
+            except TypeError: # the absurd case where the str() and repr() functions have bugs
+                return hash(tuple(x.__class__ for x in tup))
+
+        if any([isinstance(elem,np.dtype) for elem in self.stack]):
+            # sometimes np.dtypes behave weird especially dtype([])
+            return fallback(self.stack)
+
+        try:
+            return hash(self.stack)
+        except TypeError:
+            return fallback(self.stack)
+
+    def __eq__(self, other):
+        def eq(a,b):
+            if type(a) != type(b):
+                return False
+            if isinstance(a,(list,tuple)):
+                if len(a) != len(b):
+                    return False
+                return all([eq(x,y) for x,y in zip(a,b)])
+            if isinstance(a,np.ndarray):
+                return np.array_equal(a,b)
+            try:
+                return bool(a == b)
+            except:
+                return str(a) == str(b)
+        return eq(self.stack,other.stack)
+    def __repr__(self):
+        res = []
+        for item in self.stack:
+            try:
+                res.append(repr(item))
+            except TypeError:
+                res.append('[unable to print]')
+        res = '(' + ' || '.join(res) + ')'
+
+        res = res.replace('\n','').replace(' ','').replace('\t','')
+        res = res.replace('||',' || ')
+        return res
+
 
 class Step:
     def __init__(self, val, prior, name):
@@ -288,13 +347,16 @@ class FuncStep(Step):
             with contextlib.redirect_stderr(os.devnull):
 
                 for argc in argcs:
+                    stack_state_prefix, args = stack_state.pop(argc)
                     try:
                         # apply function to the last `argc` things on the stack, leaving everything before that unchanged
-                        res = self.val(*stack_state[-argc:])
+                        #res = self.val(*stack_state[-argc:])
+                        res = self.val(*args)
+                        repr(res)
                     except:
                         continue # program crashed
                     # if we reach this point the program didnt crash!
-                    return (*stack_state[:argc], res), argc
+                    return stack_state_prefix.push(res)
                 # if we reach this point the program crashed on every attempt
                 raise ProgramFail(f'crash during execution for all argcs attempted')
 class ConstStep(Step):
@@ -305,7 +367,7 @@ class ConstStep(Step):
         Takes a stack state and returns a new one
         important: dont modify the stack_state list that you are passed
         """
-        return (*stack_state, self.val), 0
+        return stack_state.push(self.val)
 
 class VarStep(Step):
     def __init__(self, val, prior, name):
@@ -315,7 +377,7 @@ class VarStep(Step):
         Takes a stack state and returns a new one
         important: dont modify the stack_state list that you are passed
         """
-        return (*stack_state, env[self.val]), 0
+        return stack_state.push(env[self.val]())
 
 
 

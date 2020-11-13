@@ -3,30 +3,6 @@ import numpy as np
 from collections.abc import Hashable
 
 
-def make_hashable(tup):
-    """
-    methods like isinstance(tup,Hashable) fail in cases like tup=(3,[])
-    so we do this instead
-    """
-    assert isinstance(tup,tuple)
-
-    def as_str(tup):
-        try:
-            return str(tup)
-        except TypeError: # the absurd case where the str() and repr() functions have bugs
-            return f'IDX IN MEMORY:{id(tup)}'
-
-    if any([isinstance(elem,np.dtype) for elem in tup]):
-        # sometimes np.dtypes behave weird especially dtype([])
-        return as_str(tup)
-
-    try:
-        hash(tup)
-        return tup
-    except TypeError:
-        return as_str(tup)
-
-
 def save(obj, path):
     with open(path, 'wb') as f:
         pickle.dump(obj, f)
