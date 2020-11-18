@@ -17,8 +17,8 @@ class SearchState:
         self.n = n
         self.env = env
         self.seen_stack_states = {} # {hashed_state->StackProgram}
-        self.max_stack_size = 3
-        self.max_program_size = 3
+        self.max_stack_size = 5
+        self.max_program_size = 5
 
 class StackProgram:
     def __init__(self,
