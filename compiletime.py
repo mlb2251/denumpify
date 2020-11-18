@@ -6,9 +6,87 @@ from collections import defaultdict
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.keys import Keys
 from selenium import webdriver
+import inspect
+import itertools
 
 class UnusualTrafficException(Exception):
     pass
+
+class FunctionInfo:
+    stats = defaultdict(int)
+    MAX_ARITY = 4
+    def __init__(self, fn):
+        self.fn = fn
+        self.name = fn.__name__
+        self.description = fn.__doc__
+
+        # None indicates we don't know
+        self.has_axis = None
+        self.has_keepdims = None
+        self.has_varargs = None
+        self.argcs = None
+
+        try:
+            self.params = inspect.signature(fn).parameters
+        except ValueError:
+            self.params = None
+            print(f"can't find signature for {self.name}")
+        
+        # see what we can learn from inspect.signature()
+        if self.params is not None:
+            min_argc = 0
+            self.has_axis = False
+            self.has_keepdims = False
+            self.has_varargs = False
+            for name,p in self.params.items():
+                self.stats[name] += 1
+                if name == 'axis':
+                    self.has_axis = True
+                if name == 'keepdims':
+                    self.has_keepdims = True
+                if p.kind == p.VAR_POSITIONAL:
+                    self.has_varargs = True
+                elif p.kind == p.POSITIONAL_OR_KEYWORD:
+                    if p.default is p.empty:
+                        min_argc += 1 # required argument since it has no default
+                else:
+                    print(f"ignoring unusual param: {self.name}() has arg `{name}` of kind '{p.kind.description}'")
+            max_argc = min([len(self.params), FunctionInfo.MAX_ARITY])
+            if self.has_varargs:
+                max_argc = FunctionInfo.MAX_ARITY
+            self.argcs = list(range(min_argc,max_argc+1))
+
+def pre_synth(fns,cfg):
+    consts = [-1,0,1,2,None]
+    vars = ['x','y']
+
+    # load and normalize Primitive frequency data
+    freq_path = Path('saved/freq.dict')
+    freq = load(freq_path)
+    tot = sum(freq.values())
+    priors = {name: count/tot for name, count in freq.items()}
+    priors['_var'] = .2
+    priors['_const'] = .2
+    priors['_default'] = .2
+
+    # renormalize now that var/const are added and also convert to log
+    tot = sum(priors.values())
+    priors = {name: np.log(p/tot) for name, p in priors.items()}
+
+    fns = [FunctionInfo(f) for f in fns]
+
+    counts = [(name,count) for name,count in FunctionInfo.stats.items()]
+    counts.sort(key=lambda x: x[1], reverse=True)
+    print('arg name frequencies:')
+    for name,count in counts:
+        if count < 5:
+            continue
+        print(f'\t {name}: {count}')
+    
+
+    return priors,consts,vars,fns
+
+
 
 def get_freqs(fns, cfg):
     driver = Driver(headless=(not cfg.no_headless))

@@ -12,8 +12,6 @@ from compiletime import *
 from synth import *
 from util import *
 
-from program import *
-
 sns.set()
 plt.ion()
 
@@ -56,8 +54,7 @@ def main():
         plt.show()
         breakpoint()
     elif cfg.mode == 'synth':
-        #synth(fns, cfg)
-        thunkify(fns,cfg)
+        synthesize(fns,cfg)
     else:
         raise ValueError(cfg.mode)
 

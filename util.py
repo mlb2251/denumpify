@@ -2,6 +2,22 @@ import pickle
 import numpy as np
 from collections.abc import Hashable
 
+def safe_eq(a,b):
+    """
+    a safe version of the "==" operator resilient to the countless numpy bugs and crashes
+    """
+    if type(a) != type(b):
+        return False
+    if isinstance(a,(list,tuple)):
+        if len(a) != len(b):
+            return False
+        return all([safe_eq(x,y) for x,y in zip(a,b)])
+    try:
+        if isinstance(a,np.ndarray):
+            return np.array_equal(a,b)
+        return bool(a == b)
+    except:
+        return str(a) == str(b)
 
 def save(obj, path):
     with open(path, 'wb') as f:
