@@ -61,15 +61,28 @@ def get_numpy_fns():
 
     # these are the bulk of the fns we actually care about
     fns = by_types[type(lambda:0)]  # get the <class 'function'> type
+    fns += builtins
 
     # ignore ones starting with underscore
     fns = [f for f in fns if not f.__name__.startswith('_')]
+
+    custom = [
+        to_tuple,
+        index,
+        slice
+    ]
+    fns += custom
+
     # note: setbufsize causes wild crashes lol
     reject = {'lookfor', 'info', 'source', 'printoptions', 'set_printoptions','setbufsize', 'seterr', 'seterrcall','set_string_function', 'get_printoptions' }
     fns = [f for f in fns if f.__name__ not in reject]
 
     return fns
 
+def to_tuple(*args):
+    return tuple(args)
+def index(a,b):
+    return a[b]
 
 class Driver:
     def __init__(self, headless=False):

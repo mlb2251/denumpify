@@ -19,6 +19,7 @@ class ProgramFail(Exception): pass
 
 class FunctionInfo:
     stats = defaultdict(int)
+    MAX_ARITY = 4
     def __init__(self, fn):
         self.fn = fn
         self.name = fn.__name__
@@ -27,6 +28,7 @@ class FunctionInfo:
         # None indicates we don't know
         self.has_axis = None
         self.has_keepdims = None
+        self.has_varargs = None
         self.argcs = None
 
         try:
@@ -40,21 +42,27 @@ class FunctionInfo:
             min_argc = 0
             self.has_axis = False
             self.has_keepdims = False
+            self.has_varargs = False
             for name,p in self.params.items():
                 self.stats[name] += 1
                 if name == 'axis':
                     self.has_axis = True
                 if name == 'keepdims':
                     self.has_keepdims = True
-                if p.kind == p.POSITIONAL_OR_KEYWORD:
+                if p.kind == p.VAR_POSITIONAL:
+                    self.has_varargs = True
+                elif p.kind == p.POSITIONAL_OR_KEYWORD:
                     if p.default is p.empty:
                         min_argc += 1 # required argument since it has no default
                 else:
                     print(f"ignoring unusual param: {self.name}() has arg `{name}` of kind '{p.kind.description}'")
-            self.argcs = list(range(min_argc,len(self.params)+1))
+            max_argc = min([len(self.params), FunctionInfo.MAX_ARITY])
+            if self.has_varargs:
+                max_argc = FunctionInfo.MAX_ARITY
+            self.argcs = list(range(min_argc,max_argc+1))
 
 def pre_synth(fns,cfg):
-    consts = [-1,0,1]
+    consts = [-1,0,1,2,None]
     vars = ['x','y']
 
     # load and normalize Primitive frequency data
@@ -64,6 +72,7 @@ def pre_synth(fns,cfg):
     priors = {name: count/tot for name, count in freq.items()}
     priors['_var'] = .2
     priors['_const'] = .2
+    priors['_default'] = .2
 
     # renormalize now that var/const are added and also convert to log
     tot = sum(priors.values())
@@ -78,6 +87,7 @@ def pre_synth(fns,cfg):
         if count < 5:
             continue
         print(f'\t {name}: {count}')
+    
 
     return priors,consts,vars,fns
 
@@ -89,7 +99,7 @@ def thunkify(fns,cfg):
     for f in fns:
         argcs = f.argcs if f.argcs is not None else [0,1,2,3]
         for argc in argcs:
-            steps.append(FuncStep(f, priors[f.name], argc))
+            steps.append(FuncStep(f, priors.get(f.name,priors['_default']), argc))
 
     steps += [ConstStep(x, priors['_const'], str(x)) for x in consts]
     steps += [VarStep(x, priors['_var'], str(x)) for x in vars]
@@ -120,29 +130,72 @@ def thunkify(fns,cfg):
 
 
     print = tqdm.write
-    for _ in tqdm(range(2000), disable=True):
+    for _ in tqdm(range(100), disable=True):
         base_p = heap.get().p
         if base_p.deleted:
             continue
-        print(f'expanding {base_p}')
+        print(f'expanding {base_p.pretty()}')
         ps = base_p.expand()
         if len(ps) == p.search_state.n:
             heap.put(base_p.heapify()) # return it to the heap bc there might be more expansions
         for p in ps:
             if len(p.p) < search_state.max_program_size:
                 heap.put(p.heapify()) # only use as a potential parent program if its small enough
-            print(f'\t{p}')
+            print(f'\t{p.pretty()}')
     
     results = [p for p in search_state.seen_stack_states.values() if len(p.stack_state) == 1]
     results.sort(key=lambda p: -p.ll)
     for res in reversed(results):
-        print(str(res))
+        print(res.pretty())
+    
+    # quick test of the parser
+    StackProgram.parse('(0, mean.1)',search_state)
+
+    repl(search_state)
+
     print("done")
 
+
+
+def repl(search_state):
+    import readline
+    seen = search_state.seen_stack_states
+    str_seen = {str(p):p for p in seen.values()}
+    while True:
+        try:
+            line = input('>>> ').strip()
+        except EOFError:
+            break
+        if line == '':
+            continue
+        if line.startswith('?'):
+            # treat line as a search query
+            line = line[1:].strip()
+            args = line.split(' ')
+            args = [x for x in args if x != '']
+            if len(args) == 0:
+                continue
+            found = str_seen
+            # repeatedly narrow to only include results where the string `arg` shows up somewhere in str(p)
+            for arg in args:
+                found = {str_p:p for str_p,p in found.items() if arg in str_p}
+            for p in found.values():
+                print(p.pretty())
+        else:
+            # treat line as a program to execute
+            try:
+                p = StackProgram.parse(line,search_state)
+            except (ProgramFail,ParseError) as e:
+                mlb.red(e)
+                continue
+
+            seen_str = mlb.mk_green('[seen this stack state]') if p.stack_state in seen else mlb.mk_red('[not seen]')
+            print(f'{p.pretty()} {seen_str}')
 
 class SearchState:
     def __init__(self, steps:list, n:int, env:dict):
         self.steps = steps
+        self.step_from_name = {step.name:step for step in steps}
         self.n = n
         self.env = env
         self.seen_stack_states = {} # {hashed_state->StackProgram}
@@ -195,7 +248,7 @@ class StackProgram:
             if len(res) >= n:
                 break
         return res # a list of zero or more StackProgram
-    def take_step(self, step):
+    def take_step(self, step, error_if_seen=True, update_if_new=True):
         """ 
         Run the program consisting of `self` with `step` appended to it and return result
         May raise ProgramFail
@@ -208,12 +261,13 @@ class StackProgram:
 
         new_ll = self.ll + step.prior
 
+        update = update_if_new
         if stack_state in self.search_state.seen_stack_states:
             if self.search_state.seen_stack_states[stack_state].ll >= new_ll:
                 # found this stack state previously and ll was higher
-                raise ProgramFail("already seen this stack state")
-            # found this stack state previously but ll was lower so we should delete the old one
-            self.search_state.seen_stack_states[stack_state].deleted = True
+                update = False
+                if error_if_seen:
+                    raise ProgramFail("already seen this stack state")
 
         # we did it! This is a great new program and we can initialize it and return it!
         p = StackProgram(
@@ -222,9 +276,16 @@ class StackProgram:
             ll=new_ll,
             stack_state=stack_state
         )
-        self.search_state.seen_stack_states[stack_state] = p
+        # update seen_stack_states
+        if update:
+            if stack_state in self.search_state.seen_stack_states:
+                # found this stack state previously but ll was lower so we should delete the old one
+                self.search_state.seen_stack_states[stack_state].deleted = True
+            self.search_state.seen_stack_states[stack_state] = p
         return p
     def __repr__(self):
+        return f'{self.p} -> {self.stack_state} (ll={self.ll:.2f})'
+    def pretty(self):
         stack_state = repr(self.stack_state).split('||')
         stack_state = mlb.mk_green('||').join([mlb.mk_blue(s) for s in stack_state])
         return f'{self.p} -> {stack_state} (ll={self.ll:.2f})'
@@ -240,7 +301,67 @@ class StackProgram:
             presumably based on self.p. It just all gets messy so this dataclass makes more sense
         """
         return HeapItem(prio=-self.ll_upperbound, p=self)
+    @staticmethod
+    def parse(s:str, search_state: SearchState):
+        """
+        Raises:
+            ParseError
+            ProgramFail
+        """
+        # canonicalize and split into step names
+        s = canonicalize(s)
+        step_names = s[1:-1].split(', ')
+        # look up actual Step objects using names
+        steps = []
+        for step_name in step_names:
+            if step_name not in search_state.step_from_name:
+                hint = ' (hint: are you missing an arg count?)' if '.' not in step_name else ''
+                raise ParseError(f"unrecognized step name {step_name} in {s}{hint}")
+            steps.append(search_state.step_from_name[step_name])
+        # initialize stack program
+        p = StackProgram(
+                    p=(),
+                    search_state=search_state,
+                    ll=0,
+                    stack_state=StackState(())
+                    )
+        # apply steps 
+        for step in steps:
+            try:
+                p = p.take_step(step, error_if_seen=False, update_if_new=False) # may raise ProgramFail
+            except ProgramFail as e:
+                raise ProgramFail(f"During execution of {s} on step {step.name} with program {p} encountered exception: {e}")
+        return p
 
+        
+
+
+def canonicalize(s:str):
+    """
+    meshgrid.0, -1, cov.1 -> (meshgrid.0, -1, cov.1)
+    meshgrid.0 -1 cov.1 -> (meshgrid.0, -1, cov.1)
+    (meshgrid.0 -1 cov.1) -> (meshgrid.0, -1, cov.1)
+    meshgrid.0,    -1,     cov.1 -> (meshgrid.0, -1, cov.1)
+    meshgrid.0,-1,cov.1 -> (meshgrid.0, -1, cov.1)
+    meshgrid.0,-1, cov.1 -> (meshgrid.0, -1, cov.1)
+    """
+    s_original = s
+    s = s.strip()
+    # spaces become redundant commas
+    s = s.replace(' ',',')
+    # strip any parens
+    if s.startswith('('):
+        if not s.endswith(')'):
+            raise ParseError(f'starts with open paren but doesnt end with close paren: {s_original}')
+        s = s[1:-1] # strip parens
+    # split by commas
+    items = s.split(',')
+    items = [x for x in items if len(x) != 0]
+    return '(' + ', '.join(items) + ')'
+
+    
+
+class ParseError(Exception): pass
 
 @dataclass(order=True)
 class HeapItem:
@@ -369,8 +490,8 @@ class FuncStep(Step):
                     # apply function to the last `argc` things on the stack, leaving everything before that unchanged
                     res = self.val(*args)
                     repr(res) # this crashes sometimes so we want to try it
-                except:
-                    raise ProgramFail(f'crash during execution of program')
+                except Exception as e:
+                    raise ProgramFail(f'crash during execution of program: {e}')
                 finally:
                     # in case of failure, we want to restore the stack state to whatever it originally was even if inplace operations happened
                     restored1 = stack_state.restore()
