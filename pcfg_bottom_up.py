@@ -1,21 +1,59 @@
-from compiletime import pre_synth
+from compiletime import pre_synth,ArgInfo
 import numpy as np
+from dataclasses import dataclass,field
+import os
+from typing import *
+import contextlib
+from copy import deepcopy
+from util import *
+from fastcore.basics import ifnone
 
 def pcfg_bottom_up(fns,cfg):
-    priors,consts,vars,fns = pre_synth(fns,cfg)
+    priors,consts,_,fns = pre_synth(fns,cfg)
 
 
     priors = {k:int(v) for k,v in priors.items()}
 
+
+    # TODO TEMP
+
+    #priors = {k:-1 for k,v in priors.items()}
     step = 1
     target = 0
+
+    env = {
+        'x': lambda: np.ones((2,3)),
+        'y': lambda: np.array([[1,2,3],[4,5,6]]),
+    }
 
     terminals = []
     nonterminals = []
 
+    for f in fns:
+        argcs = f.argcs if f.argcs is not None else [0,1,2,3]
+        for argc in argcs:
+            nonterm = Nonterminal([ArgInfo() for _ in range(argc)],
+                                  priors.get(f.name,priors['_default']),
+                                  f.fn)
+            if f.name == 'correlate':
+                nonterm.arginfos = [a._and(lambda x: isinstance(x,np.ndarray)) for a in nonterm.arginfos]
+            elif f.name == 'vdot':
+                nonterm.arginfos = [a._and(lambda x: not isinstance(x,type)) for a in nonterm.arginfos]
+            nonterminals.append(nonterm)
+    
+    for const in consts:
+        nonterm = Nonterminal([],priors['_const'],lambda:const, name=str(const))
+        terminals.append(Expr(nonterm,[]))
+    for var in env:
+        nonterm = Nonterminal([],priors['_var'],lambda:env[var], name=str(var))
+        terminals.append(Expr(nonterm,[]))
+    
+    assert not any([t.exception for  t in terminals])
+
+    seen = set()
 
     while True:
-        print(f"{target:=}")
+        print(f"{target =} {len(terminals) =}")
         terminals.sort(key=lambda x:-x.ll)
         frozen_terminals = terminals[:] # this shallow copy by "[:]" is v imp
         for nonterminal in nonterminals:
@@ -31,15 +69,29 @@ def pcfg_bottom_up(fns,cfg):
             for args_cand in args_cands:
                 # args_cand :: [Terminal]
                 assert nonterminal.prior + sum([term.ll for term in args_cand]) >= target
-                expr = Expr.from_nonterminal(nonterminal, args_cand)
-                res = expr.evaluate(env)
+                expr = Expr(nonterminal, args_cand)
+                if expr.exception:
+                    continue
+                check_seen = Val(expr.val)
+                if check_seen in seen:
+                    # TODO check relative lls maybe just to be safe
+                    continue # observational equivalence
+                seen.add(check_seen)
                 # TODO do some observational equiv checking here (careful to assert relative lls so you dont throw out an optimal choice)
-                terminals.append(Terminal.from_nonterminal(nonterminal,args_cand))
+                terminals.append(expr)
 
 
 
         target -= 1
 
+class Val:
+    def __init__(self,val):
+        self.val = val
+    def __hash__(self):
+        return safe_hash(self.val)
+    def __eq__(self,other):
+        return safe_eq(self.val,other.val)
+    
 
 def get_arg_candidates(
     min_ll, # lowest allowed ll, dont return candidates below this
@@ -49,6 +101,7 @@ def get_arg_candidates(
     ):
     if len(arginfos_remaining) == 0:
         yield args_so_far # this is the base case that actually returns a real value!
+        return
     arginfo = arginfos_remaining[0]
     for terminal in terminals:
         if terminal.ll < min_ll:
@@ -66,37 +119,69 @@ def get_arg_candidates(
 
 
 
-class Terminal:
-    def __init__(self,expr,val):
-        self.expr = expr
-        self.val = val
-        self.ll = expr.nonterminal.prior + sum([term.ll for term in args])
+# class Terminal:
+#     def __init__(self,expr,val):
+#         self.expr = expr
+#         self.val = expr.val
+#         self.ll = expr.ll
 
-    @staticmethod
-    def from_nonterminal(nonterminal, args):
-        # args :: [Terminal]
-        assert len(args) == nonterminal.argc
-        expr = Expr(nonterminal,[term.expr for term in args])
-        return Terminal(expr, ll)
+#     @staticmethod
+#     def from_nonterminal(nonterminal, args):
+#         # args :: [Terminal]
+#         assert len(args) == nonterminal.argc
+#         expr = Expr(nonterminal,[term.expr for term in args])
+#         return Terminal(expr, ll)
 
+
+
+
+@dataclass
 class Nonterminal:
-    arginfos # list of ArgInfo
-    argc
-    prior
+    def __init__(self,arginfos, prior, fn, name=None):
+        self.arginfos = arginfos
+        self.prior = prior
+        self.fn = fn
+        self.argc = len(arginfos)
+        self.name = ifnone(name,f'{fn.__name__}.{self.argc}')
+    def __repr__(self):
+        return self.name
 
-class ArgInfo:
-    allow_terminal = lambda x:True
 
 class Expr:
-    def __init__(self,nonterminal, args, ll):
+    def __init__(self,nonterminal, args, ):
+        assert len(args) == nonterminal.argc
         self.nonterminal = nonterminal
         self.args = args # [Expr]
-        self.ll = ll
-    @staticmethod
-    def from_nonterminal(nonterminal, args):
-        # args :: [Terminal]
-        assert len(args) == nonterminal.argc
-        return Expr(nonterminal,[term.expr for term in args], nonterminal.prior + [term.ll for term in args])
+        self.ll = self.nonterminal.prior + sum([a.ll for a in self.args])
+        #print(f"ayy {self.nonterminal} {self.args}")
+        with contextlib.redirect_stdout(os.devnull):
+            with contextlib.redirect_stderr(os.devnull):
+                try:
+                    self.val = self.nonterminal.fn(*[a.val for a in self.args])
+                    repr(self.val) # if this fails we throw it out
+                    self.val_backup = deepcopy(self.val) # likewise if this fails we throw it out
+                    self.exception = False
+                except Exception as e:
+                    self.val = Exception # not important
+                    self.exception = True
+                finally:
+                    for a in self.args:
+                        a.restore()
+        #print("lmao")
+    def restore(self):
+        if not safe_eq(self.val,self.val_backup):
+            # our stack has been modified by some inplace operation! Lets restore the original
+            self.val = deepcopy(self.val_backup)
+            return True
+        return False
+    def __repr__(self):
+        args = ','.join(repr(self.args))
+        return f'{self.nonterminal}[{self.ll}]({args})'
+        
+    # @staticmethod
+    # def from_nonterminal(nonterminal, args):
+    #     # args :: [Terminal]
+    #     return Expr(nonterminal,args)
 
 
 

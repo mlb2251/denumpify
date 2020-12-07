@@ -25,6 +25,7 @@ class FunctionInfo:
         self.has_keepdims = None
         self.has_varargs = None
         self.argcs = None
+        self.arginfos = None
 
         try:
             self.params = inspect.signature(fn).parameters
@@ -55,6 +56,17 @@ class FunctionInfo:
             if self.has_varargs:
                 max_argc = FunctionInfo.MAX_ARITY
             self.argcs = list(range(min_argc,max_argc+1))
+
+from typing import Callable
+class ArgInfo:
+    def __init__(self,allow_terminal=(lambda expr:True)):
+        self.allow_terminal = allow_terminal
+    def _and(self,fn):
+        old = self.allow_terminal # decided to pull this out instead of closuring it
+        return ArgInfo(lambda expr: old(expr) and fn(expr))
+    def _or(self,fn):
+        old = self.allow_terminal # decided to pull this out instead of closuring it
+        return ArgInfo(lambda expr: old(expr) or fn(expr))
 
 def pre_synth(fns,cfg):
     consts = [-1,0,1,2,None]
@@ -152,7 +164,7 @@ def get_numpy_fns():
     fns += custom
 
     # note: setbufsize causes wild crashes lol
-    reject = {'lookfor', 'info', 'source', 'printoptions', 'set_printoptions','setbufsize', 'seterr', 'seterrcall','set_string_function', 'get_printoptions' }
+    reject = {'lookfor', 'info', 'source', 'printoptions', 'set_printoptions','setbufsize', 'seterr', 'seterrcall','set_string_function', 'get_printoptions', 'getbufsize','get_include','deprecate'}
     fns = [f for f in fns if f.__name__ not in reject]
 
     return fns

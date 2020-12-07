@@ -1,5 +1,6 @@
 from pathlib import Path
 import os
+from pcfg_bottom_up import pcfg_bottom_up
 import sys
 import argparse
 import mlb
@@ -54,7 +55,7 @@ def main():
         plt.show()
         breakpoint()
     elif cfg.mode == 'synth':
-        synthesize(fns,cfg)
+        pcfg_bottom_up(fns,cfg)
     else:
         raise ValueError(cfg.mode)
 

@@ -19,6 +19,30 @@ def safe_eq(a,b):
     except:
         return str(a) == str(b)
 
+def safe_hash(obj):
+    """
+    - only req: for two objects if they are equal as defined by
+        __eq__ then they must have the same __hash__ value
+    - hash must be an int
+    - methods like isinstance(tup,Hashable) fail in cases like tup=(3,[])
+        so we have to do the try/except
+    """
+    def fallback():
+        try:
+            return hash(str(obj))
+        except TypeError: # the absurd case where the str() and repr() functions have bugs
+            raise NotImplementedError # probably we should never reach this point bc this means our value is not even interesting in the first place
+
+    if isinstance(obj,np.dtype):
+        # sometimes np.dtypes behave weird especially dtype([])
+        # so here we dont even wanna attempt hash() I think
+        return fallback()
+
+    try:
+        return hash(obj)
+    except TypeError:
+        return fallback()
+
 def save(obj, path):
     with open(path, 'wb') as f:
         pickle.dump(obj, f)
