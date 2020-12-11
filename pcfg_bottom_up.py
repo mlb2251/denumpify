@@ -42,22 +42,28 @@ def pcfg_bottom_up(fns,cfg):
                 nonterm.arginfos = [a._and(lambda x: not isinstance(x,type)) for a in nonterm.arginfos]
             nonterminals.append(nonterm)
     
+    
     for const in consts:
-        nonterm = Nonterminal([],priors['_const'],lambda:const, name=str(const))
+        nonterm = Nonterminal([],priors['_const'],lambda const=const:const, name=str(const))
         terminals.append(Expr(nonterm,[]))
     for var in env:
-        nonterm = Nonterminal([],priors['_var'],lambda:env[var], name=str(var))
+        nonterm = Nonterminal([],priors['_var'],lambda env=env,var=var:env[var], name=str(var))
         terminals.append(Expr(nonterm,[]))
-    
+
+
+    nonterminals_vars_consts = nonterminals + [e.nonterminal for e in terminals]
+
     assert not any([t.exception for  t in terminals])
 
-    seen = set()
+    seen = {}
 
-    while target >= -9:
+    while target >= -8:
         print(f"{target =} {len(terminals) =}")
         terminals.sort(key=lambda x:-x.ll)
         frozen_terminals = terminals[:] # this shallow copy by "[:]" is v imp
+        check_len = len(frozen_terminals)
         for nonterminal in nonterminals:
+            assert len(frozen_terminals) == check_len
             if nonterminal.prior <= target:
                 continue
 
@@ -76,8 +82,9 @@ def pcfg_bottom_up(fns,cfg):
                 check_seen = Val(expr.val)
                 if check_seen in seen:
                     # TODO check relative lls maybe just to be safe
+                    #assert seen[check_seen].ll >= expr.ll
                     continue # observational equivalence
-                seen.add(check_seen)
+                seen[check_seen] = expr
                 # TODO do some observational equiv checking here (careful to assert relative lls so you dont throw out an optimal choice)
                 terminals.append(expr)
 
@@ -88,10 +95,10 @@ def pcfg_bottom_up(fns,cfg):
     for t in terminals[::-1]:
         print(t.pretty())
     
-    repl(terminals,seen)
+    repl(terminals,nonterminals,nonterminals_vars_consts, seen)
     print("hi")
 
-def repl(terminals, seen):
+def repl(terminals,nonterminals, nonterminals_vars_consts, seen):
     import readline
     str_terms = {t:str(t) for t in terminals}
     while True:
@@ -100,6 +107,10 @@ def repl(terminals, seen):
         except EOFError:
             break
         if line == '':
+            continue
+        if line == 'seen':
+            for val in seen:
+                print(val.val)
             continue
         if line.startswith('?'):
             # treat line as a search query
@@ -116,17 +127,18 @@ def repl(terminals, seen):
                 print(t.pretty())
         else:
             # treat line as a program to execute
-            mlb.red('interpreter not yet implemented')
-            continue
             try:
-                #p = StackProgram.parse(line,search_state)
-                val = eval(line)
-            except (Exceptions,ParseError) as e:
-                mlb.red(e)
+                e = parse(line,nonterminals_vars_consts)
+            except ParseError as exc:
+                mlb.red(exc)
+                continue
+            if e.exception:
+                mlb.red(e.val)
                 continue
 
-            seen_str = mlb.mk_green('[seen this stack state]') if p.stack_state in seen else mlb.mk_red('[not seen]')
-            print(f'{p.pretty()} {seen_str}')
+            check_seen = Val(e.val)
+            seen_str = mlb.mk_green(f'[seen this val from {seen[check_seen]} (ll={seen[check_seen].ll}) ]') if check_seen in seen else mlb.mk_red('[not seen]')
+            print(f'{e.pretty()} {seen_str}')
 
 
 
@@ -209,7 +221,7 @@ class Expr:
                     self.val_backup = deepcopy(self.val) # likewise if this fails we throw it out
                     self.exception = False
                 except Exception as e:
-                    self.val = Exception # not important
+                    self.val = e # not important
                     self.exception = True
                 finally:
                     for a in self.args:
@@ -247,6 +259,98 @@ class Expr:
     #     return Expr(nonterminal,args)
 
 
+class ParseError(Exception):
+    def __init__(self,*args):
+        super().__init__(' '.join(args))
+
+import re
+
+def parse(s:str,nonterms:List[Nonterminal], nt_of_name=None, names=None) -> Expr:
+    """
+    note nonterms should actually be nonterminals_vars_consts
+    ie it should have the Nonterminal instance for each var and const
+
+    removes all whitespace during preproc (just as a simple solution, but
+    watch out if it gives you weird errors)
+
+    may raise ParseError
+    """
+    if names is None:
+        names = [nonterm.name_noargc for nonterm in nonterms]
+    if nt_of_name is None:
+        nt_of_name = {(nt.name_noargc,nt.argc):nt for nt in nonterms}
+
+    # fn calls become tuples: (fn_name,[args])
+    #     example: foo(bar(x,y),z) -> ('foo',[('bar',['x','y']),'z'])
+
+    # strip whitespace, remove spaces, do some basic checks
+    s = s.strip()
+    if '\n' in s:
+        raise ParseError("why is there a newline")
+    if s.count('(') != s.count(')'):
+        raise ParseError("unequal number of opening and closing parens")
+    if len(s) == 0:
+        raise ParseError("empty string")
+
+    # figure out what funciton / const / var is being used next
+    match = re.match(r'(\w|-)+',s)
+    if match is None:
+        raise ParseError("Expected string to start with an identifier:",s)
+    name = s[:match.end()]
+    s = s[match.end():]
+    if name not in names:
+        raise ParseError("unrecognized nonterminal:",name)
+    
+    # handle var and const
+    if len(s) == 0:
+        # since this was the last token of the string
+        # its a const or var so we wanna call the Nonterminal
+        # with zero arguments
+        if (name,0) not in nt_of_name:
+            raise ParseError("cant find in nt_of_name with correct number of args")
+        return Expr(nt_of_name[(name,0)],[])
+    
+    # handle function call
+    if s[0] != '(':
+        raise ParseError("expected open paren, got:",s)
+    if s[-1] != ')':
+        raise ParseError("expected this to end with close paren:",s)
+
+    s = s[1:-1]
+    # split by commas, except when already inside parens
+    args = []
+    while True:
+        s = s.strip()
+        if s == '':
+            break # only happens if zero args
+        i = next_comma(s) # find net comma, but aware of paren depth
+        if i == -1: # no more commas, so we should parse the rest into an Expr
+            args.append(parse(s,nonterms,nt_of_name,names))
+            break
+        else: # parse next arg into an Expr
+            args.append(parse(s[:i],nonterms,nt_of_name,names))
+            s = s[i+1:] # skip the ',' and continue
+
+    if (name,len(args)) not in nt_of_name:
+        raise ParseError(f'{name} applied to wrong number of args, got {len(args)}')
+
+    return Expr(nt_of_name[(name,len(args))],args)
+    
+
+def next_comma(s):
+    depth = 0
+    for i,char in enumerate(s):
+        if char == ',' and depth == 0:
+            return i
+        if char == '(':
+            depth += 1
+        if char == ')':
+            depth -= 1
+            if depth < 0:
+                raise ParseError("too many closing parens")
+    if depth > 0:
+        raise ParseError("not enough closing parens")
+    return -1 # indicates no more commans
 
 
 
