@@ -79,7 +79,10 @@ def pre_synth(fns,cfg):
     priors = {name: count/tot for name, count in freq.items()}
     priors['_var'] = .2
     priors['_const'] = .2
-    priors['_default'] = .2
+    priors['_default'] = .1
+    priors['to_tuple'] = .05
+    priors['index'] = .2
+    priors['slice'] = .05
 
     # renormalize now that var/const are added and also convert to log
     tot = sum(priors.values())

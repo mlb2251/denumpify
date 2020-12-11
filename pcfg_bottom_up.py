@@ -1,5 +1,6 @@
 from compiletime import pre_synth,ArgInfo
 import numpy as np
+import mlb
 from dataclasses import dataclass,field
 import os
 from typing import *
@@ -22,8 +23,8 @@ def pcfg_bottom_up(fns,cfg):
     target = 0
 
     env = {
-        'x': lambda: np.ones((2,3)),
-        'y': lambda: np.array([[1,2,3],[4,5,6]]),
+        'x': np.ones((2,3)),
+        'y': np.array([[1,2,3],[4,5,6]]),
     }
 
     terminals = []
@@ -52,7 +53,7 @@ def pcfg_bottom_up(fns,cfg):
 
     seen = set()
 
-    while True:
+    while target >= -9:
         print(f"{target =} {len(terminals) =}")
         terminals.sort(key=lambda x:-x.ll)
         frozen_terminals = terminals[:] # this shallow copy by "[:]" is v imp
@@ -83,6 +84,51 @@ def pcfg_bottom_up(fns,cfg):
 
 
         target -= 1
+    terminals.sort(key=lambda x:-x.ll)
+    for t in terminals[::-1]:
+        print(t.pretty())
+    
+    repl(terminals,seen)
+    print("hi")
+
+def repl(terminals, seen):
+    import readline
+    str_terms = {t:str(t) for t in terminals}
+    while True:
+        try:
+            line = input('>>> ').strip()
+        except EOFError:
+            break
+        if line == '':
+            continue
+        if line.startswith('?'):
+            # treat line as a search query
+            line = line[1:].strip()
+            args = line.split(' ')
+            args = [x for x in args if x != '']
+            if len(args) == 0:
+                continue
+            found = str_terms
+            # repeatedly narrow to only include results where the string `arg` shows up somewhere in str(p)
+            for arg in args:
+                found = {t:s for t,s in found.items() if arg in s}
+            for t in found:
+                print(t.pretty())
+        else:
+            # treat line as a program to execute
+            mlb.red('interpreter not yet implemented')
+            continue
+            try:
+                #p = StackProgram.parse(line,search_state)
+                val = eval(line)
+            except (Exceptions,ParseError) as e:
+                mlb.red(e)
+                continue
+
+            seen_str = mlb.mk_green('[seen this stack state]') if p.stack_state in seen else mlb.mk_red('[not seen]')
+            print(f'{p.pretty()} {seen_str}')
+
+
 
 class Val:
     def __init__(self,val):
@@ -142,9 +188,10 @@ class Nonterminal:
         self.prior = prior
         self.fn = fn
         self.argc = len(arginfos)
-        self.name = ifnone(name,f'{fn.__name__}.{self.argc}')
+        self.name_noargc = ifnone(name,f'{fn.__name__}')
+        self.name = ifnone(name,f'{self.name_noargc}.{self.argc}')
     def __repr__(self):
-        return self.name
+        return self.name_noargc
 
 
 class Expr:
@@ -174,9 +221,25 @@ class Expr:
             self.val = deepcopy(self.val_backup)
             return True
         return False
+    def size(self):
+        return 1 + sum(arg.size() for arg in self.args)
+    def record_usages(self,prod_dict):
+        """
+        increment the slot in prod_dict[Nonterminal -> int] 
+        corresponding to ur nonterminal and recurse on your children
+        """
+        prod_dict[self.nonterminal] += 1
+        for arg in self.args:
+            arg.record_usages(prod_dict)
     def __repr__(self):
-        args = ','.join(repr(self.args))
-        return f'{self.nonterminal}[{self.ll}]({args})'
+        if len(self.args) == 0:
+            return repr(self.nonterminal)
+        args = ','.join([repr(a) for a in self.args])
+        return f'{self.nonterminal}({args})'
+    def pretty(self):
+        val = repr(self.val).replace('\n','').replace(' ','').replace('\t','')
+        val = mlb.mk_blue(val)
+        return f'{self} (ll={self.ll}) -> {val}'
         
     # @staticmethod
     # def from_nonterminal(nonterminal, args):
@@ -185,102 +248,51 @@ class Expr:
 
 
 
-def foo():
-    raise NotImplementedError
 
 
-    steps = []
-    for f in fns:
-        argcs = f.argcs if f.argcs is not None else [0,1,2,3]
-        for argc in argcs:
-            steps.append(FuncStep(f, priors.get(f.name,priors['_default']), argc))
+def get_best_unigram(progs:List[Expr], prods:List[Nonterminal], uniform_factor=.2):
+    """
+    Get the best unigram model based on the set of programs. Smooth it out based on the
+    uniform_factor.
+    Args:
+        progs (list[Expr]): list of programs to calculate the best PCFG for
+        prods (list[Nonterminal]): list of production rules (nonterminals)
+        uniform_factor (float, default=.2): how much a uniform pcfg is favored, so
+            we dont assign some productions exactly to zero. The final pcfg returned
+            will be pcfg * (1-uniform_factor) + uniform_pcfg * uniform_factor.
+    Returns:
+        dict[Nonterminal -> ll]
+    """
+    usage_counts = {prod:0 for prod in prods}
 
-    steps += [ConstStep(x, priors['_const'], str(x)) for x in consts]
-    steps += [VarStep(x, priors['_var'], str(x)) for x in vars]
+    for prog in progs:
+        prog.record_usages(usage_counts)
 
-    steps.sort(key=lambda step: step.prior)
+    total = sum(usage_counts.values())
+    # add bias in favor of uniform distribution by removing 20% from each usage
+    # count then evenly redistributing that. Smooths everythign slightly.
+    bias = total*uniform_factor/len(usage_counts)
+    biased_usage_counts = {prod:(1-uniform_factor)*usage + bias for prod,usage in usage_counts.items()}
+    total = sum(usage_counts.values())
 
-    env = {
-        'x': lambda: np.ones((2,3)),
-        'y': lambda: np.array([[1,2,3],[4,5,6]]),
-    }
+    pcfg = {prod:np.log(usages/total) for prod,usages in biased_usage_counts.items()}
 
-    search_state = SearchState(
-                            steps,
-                            n=3,
-                            env=env,
-                            )
-
-    p = StackProgram(
-                p=(),
-                search_state=search_state,
-                ll=0,
-                stack_state=StackState(())
-                )
-
-    heap = PriorityQueue()
-    heap.put(p.heapify())
+    return pcfg
 
 
-    print = tqdm.write
-    for _ in tqdm(range(100), disable=True):
-        base_p = heap.get().p
-        if base_p.deleted:
-            continue
-        print(f'expanding {base_p.pretty()}')
-        ps = base_p.expand()
-        if len(ps) == p.search_state.n:
-            heap.put(base_p.heapify()) # return it to the heap bc there might be more expansions
-        for p in ps:
-            if len(p.p) < search_state.max_program_size:
-                heap.put(p.heapify()) # only use as a potential parent program if its small enough
-            print(f'\t{p.pretty()}')
-    
-    results = [p for p in search_state.seen_stack_states.values() if len(p.stack_state) == 1]
-    results.sort(key=lambda p: -p.ll)
-    for res in reversed(results):
-        print(res.pretty())
-    
-    # quick test of the parser
-    StackProgram.parse('(0, mean.1)',search_state)
+def get_best_bigram():
+    """
+    honestly wouldnt be much different from the unigram algorithm. You just have a usage_count
+    dict for each context (ie a context = who ur parent is) then you still only normalize within
+    each usage_count dict. You could imagine just having the Expr.record_usage function take a dict
+    of dicts and update the correct one by telling its child stuff abt its context.
 
-    repl(search_state)
-
-    print("done")
+    we dont even care if stuff doesnt type check bc thatll get masked out anyways
+    """
 
 
-def repl(search_state):
-    raise NotImplementedError
-    import readline
-    seen = search_state.seen_stack_states
-    str_seen = {str(p):p for p in seen.values()}
-    while True:
-        try:
-            line = input('>>> ').strip()
-        except EOFError:
-            break
-        if line == '':
-            continue
-        if line.startswith('?'):
-            # treat line as a search query
-            line = line[1:].strip()
-            args = line.split(' ')
-            args = [x for x in args if x != '']
-            if len(args) == 0:
-                continue
-            found = str_seen
-            # repeatedly narrow to only include results where the string `arg` shows up somewhere in str(p)
-            for arg in args:
-                found = {str_p:p for str_p,p in found.items() if arg in str_p}
-            for p in found.values():
-                print(p.pretty())
-        else:
-            # treat line as a program to execute
-            try:
-                p = StackProgram.parse(line,search_state)
-            except (ProgramFail,ParseError) as e:
-                mlb.red(e)
-                continue
 
-            seen_str = mlb.mk_green('[seen this stack state]') if p.stack_state in seen else mlb.mk_red('[not seen]')
-            print(f'{p.pretty()} {seen_str}')
+
+
+
+
