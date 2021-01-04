@@ -19,8 +19,6 @@ def pcfg_bottom_up(fns,cfg):
     # TODO TEMP
 
     #priors = {k:-1 for k,v in priors.items()}
-    step = 1
-    target = 0
 
     env = {
         'x': np.ones((2,3)),
@@ -55,9 +53,23 @@ def pcfg_bottom_up(fns,cfg):
 
     assert not any([t.exception for  t in terminals])
 
-    seen = {}
+    seen = {Val(t.val):t for t in terminals}
 
-    while target >= -8:
+    progs = user_inputs()
+    progs = [parse(prog,nonterminals_vars_consts) for prog in progs]
+
+    
+    uni = get_best_unigram(progs,nonterminals_vars_consts)
+    update_priors(uni)
+    int_priors(nonterminals_vars_consts)
+    target_stop = -10
+    bup_enumerate(terminals,nonterminals,target_stop,seen)
+    repl(terminals,nonterminals,nonterminals_vars_consts, seen, target_stop)
+
+def bup_enumerate(terminals,nonterminals, target_stop, seen, target_start=0):
+    assert target_stop < 0
+    target = target_start
+    while target >= target_stop:
         print(f"{target =} {len(terminals) =}")
         terminals.sort(key=lambda x:-x.ll)
         frozen_terminals = terminals[:] # this shallow copy by "[:]" is v imp
@@ -95,10 +107,8 @@ def pcfg_bottom_up(fns,cfg):
     for t in terminals[::-1]:
         print(t.pretty())
     
-    repl(terminals,nonterminals,nonterminals_vars_consts, seen)
-    print("hi")
 
-def repl(terminals,nonterminals, nonterminals_vars_consts, seen):
+def repl(terminals,nonterminals, nonterminals_vars_consts, seen, target_stop):
     import readline
     str_terms = {t:str(t) for t in terminals}
     while True:
@@ -107,6 +117,10 @@ def repl(terminals,nonterminals, nonterminals_vars_consts, seen):
         except EOFError:
             break
         if line == '':
+            continue
+        if line == 'enum':
+            target_stop -= 1
+            bup_enumerate(terminals,nonterminals,target_stop,seen,target_start=target_stop)
             continue
         if line == 'seen':
             for val in seen:
@@ -132,13 +146,19 @@ def repl(terminals,nonterminals, nonterminals_vars_consts, seen):
             except ParseError as exc:
                 mlb.red(exc)
                 continue
-            if e.exception:
-                mlb.red(e.val)
-                continue
 
             check_seen = Val(e.val)
             seen_str = mlb.mk_green(f'[seen this val from {seen[check_seen]} (ll={seen[check_seen].ll}) ]') if check_seen in seen else mlb.mk_red('[not seen]')
             print(f'{e.pretty()} {seen_str}')
+
+
+def user_inputs():
+    return [
+        'concatenate(tup(y,x))',
+        'repeat(y,2,1)',
+        'all(eq(x,y))',
+        'dot(transpose(x),y)'
+    ]
 
 
 
@@ -177,22 +197,6 @@ def get_arg_candidates(
 
 
 
-# class Terminal:
-#     def __init__(self,expr,val):
-#         self.expr = expr
-#         self.val = expr.val
-#         self.ll = expr.ll
-
-#     @staticmethod
-#     def from_nonterminal(nonterminal, args):
-#         # args :: [Terminal]
-#         assert len(args) == nonterminal.argc
-#         expr = Expr(nonterminal,[term.expr for term in args])
-#         return Terminal(expr, ll)
-
-
-
-
 @dataclass
 class Nonterminal:
     def __init__(self,arginfos, prior, fn, name=None):
@@ -204,6 +208,8 @@ class Nonterminal:
         self.name = ifnone(name,f'{self.name_noargc}.{self.argc}')
     def __repr__(self):
         return self.name_noargc
+    def __hash__(self):
+        return hash(self.name)
 
 
 class Expr:
@@ -249,14 +255,31 @@ class Expr:
         args = ','.join([repr(a) for a in self.args])
         return f'{self.nonterminal}({args})'
     def pretty(self):
-        val = repr(self.val).replace('\n','').replace(' ','').replace('\t','')
+        if isinstance(self.val,slice):
+            rep = slice_repr(self.val)
+        else:
+            rep = repr(self.val)
+        val = rep.replace('\n','').replace(' ','').replace('\t','')
         val = mlb.mk_blue(val)
         return f'{self} (ll={self.ll}) -> {val}'
         
-    # @staticmethod
-    # def from_nonterminal(nonterminal, args):
-    #     # args :: [Terminal]
-    #     return Expr(nonterminal,args)
+
+def slice_repr(s):
+    assert isinstance(s,slice)
+    if s.start is None and s.stop is None and s.step is None:
+        # ':' case
+        return ':'
+    if s.step is None:
+        # 'start:stop' case
+        start = ifnone(s.start,'')
+        stop = ifnone(s.stop,'')
+        return f'{start}:{stop}'
+    # 'start:stop:step' case
+    start = ifnone(s.start,'')
+    stop = ifnone(s.stop,'')
+    step = ifnone(s.step,'')
+    return f'{start}:{stop}:{step}'
+
 
 
 class ParseError(Exception):
@@ -307,8 +330,12 @@ def parse(s:str,nonterms:List[Nonterminal], nt_of_name=None, names=None) -> Expr
         # its a const or var so we wanna call the Nonterminal
         # with zero arguments
         if (name,0) not in nt_of_name:
-            raise ParseError("cant find in nt_of_name with correct number of args")
-        return Expr(nt_of_name[(name,0)],[])
+            argcs = [argc for (fname,argc) in nt_of_name if fname == name]
+            raise ParseError(f"found {name}() but can't call it with 0 args. Allowed argcs: {argcs}")
+        expr = Expr(nt_of_name[(name,0)],[])
+        if expr.exception:
+            raise ParseError(f"exception during execution of subtree {expr}: {expr.val}")
+        return expr
     
     # handle function call
     if s[0] != '(':
@@ -332,9 +359,13 @@ def parse(s:str,nonterms:List[Nonterminal], nt_of_name=None, names=None) -> Expr
             s = s[i+1:] # skip the ',' and continue
 
     if (name,len(args)) not in nt_of_name:
-        raise ParseError(f'{name} applied to wrong number of args, got {len(args)}')
+        argcs = [argc for (fname,argc) in nt_of_name if fname == name]
+        raise ParseError(f'{name} applied to wrong number of args, got {len(args)} but expected one of these: {argcs}')
 
-    return Expr(nt_of_name[(name,len(args))],args)
+    expr = Expr(nt_of_name[(name,len(args))],args)
+    if expr.exception:
+        raise ParseError(f"exception during execution of subtree {expr}: {expr.val}")
+    return expr
     
 
 def next_comma(s):
@@ -353,6 +384,26 @@ def next_comma(s):
     return -1 # indicates no more commans
 
 
+def parse_indexer(s):
+    """
+    parse the contents of a [...]
+    assumes s has been stripped of its brackets already
+    pretty limited but supports stuff like
+        [:]
+        [:,:]
+        [:4,6:]
+        [None:]
+        [x] # maybe
+    """
+    raise NotImplementedError
+
+def update_priors(priors_dict:Dict[Nonterminal,float]):
+    for nt,prior in priors_dict.items():
+        nt.prior = prior
+
+def int_priors(prods:List[Nonterminal]):
+    for prod in prods:
+        prod.prior = int(prod.prior)
 
 def get_best_unigram(progs:List[Expr], prods:List[Nonterminal], uniform_factor=.2):
     """

@@ -8,6 +8,7 @@ from selenium.webdriver.common.keys import Keys
 from selenium import webdriver
 import inspect
 import itertools
+import operator
 
 class UnusualTrafficException(Exception):
     pass
@@ -160,9 +161,14 @@ def get_numpy_fns():
     fns = [f for f in fns if not f.__name__.startswith('_')]
 
     custom = [
-        to_tuple,
-        index,
-        slice
+        tup, # make a tuple
+        slice, # make a slice
+        operator.eq,
+        operator.ne,
+        operator.add,
+        operator.sub,
+        operator.mul,
+        operator.getitem, # indexing and slicing. Takes an object and an index/slice
     ]
     fns += custom
 
@@ -172,10 +178,31 @@ def get_numpy_fns():
 
     return fns
 
-def to_tuple(*args):
+def tup(*args):
     return tuple(args)
-def index(a,b):
-    return a[b]
+def index(obj,*slices):
+    """
+    Easier slicing for use in DSL. Roughly this is obj[*slices] though
+    of course you cant use star expansion in a slice (you need to instead
+    use a tuple of slices as your indexer). And furthermore we'll add some
+
+
+    dont worry a[(1,)] is the same as a[1] i think so this works for normal
+    indexing too thats just the 1-tuple case
+
+
+    slice(None)  -> :       # one arg and it's None: no constraints
+    slice(3)     -> :3      # one arg: interpret as end=...
+    slice(None,3) -> same as prev
+    slice(3,4)    -> 3:4    # two arg: interpret as start=... end=...
+    slice(3,None) -> 3: # since it says "start at 3 but have no end"
+
+    """
+    return obj[slices]
+def _eq(a,b):
+    return a == b
+def _add(a,b):
+    return a + b
 
 class Driver:
     def __init__(self, headless=False):
