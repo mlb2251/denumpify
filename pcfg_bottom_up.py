@@ -16,8 +16,6 @@ def pcfg_bottom_up(fns,cfg):
     priors = {k:int(v) for k,v in priors.items()}
 
 
-    # TODO TEMP
-
     #priors = {k:-1 for k,v in priors.items()}
 
     env = {
@@ -45,6 +43,8 @@ def pcfg_bottom_up(fns,cfg):
         nonterm = Nonterminal([],priors['_const'],lambda const=const:const, name=str(const))
         terminals.append(Expr(nonterm,[]))
     for var in env:
+        # NEVER change this from str(var). if its named anything other than "x", "y", etc
+        # then we won't be able to find it in Expr.run to modify the environment
         nonterm = Nonterminal([],priors['_var'],lambda env=env,var=var:env[var], name=str(var))
         terminals.append(Expr(nonterm,[]))
 
@@ -262,6 +262,36 @@ class Expr:
         val = rep.replace('\n','').replace(' ','').replace('\t','')
         val = mlb.mk_blue(val)
         return f'{self} (ll={self.ll}) -> {val}'
+    def run(self, env):
+        """
+        a scrappy method that doesnt use memoization and just recursively evaluates
+        the expr in the context of the provided env. Returns an actual python value
+        or an Exception.
+        """
+        # override the environment temporarily
+        if self.nonterminal.name in env: # ie if it's named "x" or "y"
+            return env[self.nonterminal.name]
+        
+        # calculate values of args
+        args = [arg.run(env) for arg in self.args]
+
+        # return Exception if any child returned Exception
+        for arg in args:
+            if isinstance(arg,Exception):
+                return arg
+
+        # execute the expression
+        with contextlib.redirect_stdout(os.devnull):
+            with contextlib.redirect_stderr(os.devnull):
+                try:
+                    res = self.nonterminal.fn(*args)
+                    repr(res) # if this fails we throw it out
+                    return res
+                except Exception as e:
+                    return e
+
+
+class RuntimeException(Exception): pass
         
 
 def slice_repr(s):
