@@ -64,6 +64,17 @@ def pcfg_bottom_up(fns,cfg):
     int_priors(nonterminals_vars_consts)
     target_stop = -10
     bup_enumerate(terminals,nonterminals,target_stop,seen)
+    from analysis import partition_hspace
+    new_env = { # example bad partitioner probably?
+        'x': np.zeros((2,3)),
+        'y': np.zeros((2,3)),
+    }
+    vals, exceptions = partition_hspace(terminals,new_env)
+    for val,exprs in sorted(vals.items(),key=lambda tup: len(tup[1])):
+        print(f"{val}: {len(exprs)}")
+    print(f"num exceptions: {len(exceptions)}")
+    print(f"total groups: {len(vals)}")
+    print(f"total programs: {sum([len(exprs) for exprs in vals.values()]) + len(exceptions)}")
     repl(terminals,nonterminals,nonterminals_vars_consts, seen, target_stop)
 
 def bup_enumerate(terminals,nonterminals, target_stop, seen, target_start=0):
@@ -169,7 +180,8 @@ class Val:
         return safe_hash(self.val)
     def __eq__(self,other):
         return safe_eq(self.val,other.val)
-    
+    def __repr__(self):
+        return repr(self.val).replace('\n','').replace(' ','').replace('\t','')
 
 def get_arg_candidates(
     min_ll, # lowest allowed ll, dont return candidates below this
