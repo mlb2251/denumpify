@@ -64,17 +64,30 @@ def pcfg_bottom_up(fns,cfg):
     int_priors(nonterminals_vars_consts)
     target_stop = -10
     bup_enumerate(terminals,nonterminals,target_stop,seen)
-    from analysis import partition_hspace
-    new_env = { # example bad partitioner probably?
+
+    from analysis import HSpace,IOIntervention
+    hspace = HSpace.new(terminals)
+
+    intv1 = IOIntervention({ # example bad partitioner probably?
         'x': np.zeros((2,3)),
         'y': np.zeros((2,3)),
-    }
-    vals, exceptions = partition_hspace(terminals,new_env)
-    for val,exprs in sorted(vals.items(),key=lambda tup: len(tup[1])):
-        print(f"{val}: {len(exprs)}")
-    print(f"num exceptions: {len(exceptions)}")
-    print(f"total groups: {len(vals)}")
-    print(f"total programs: {sum([len(exprs) for exprs in vals.values()]) + len(exceptions)}")
+    })
+    intv2 = IOIntervention({ # example bad partitioner probably?
+        'x': np.eye(4),
+        'y': np.ones((2,3)),
+    })
+
+    hs1 = hspace.split(intv1)
+    hs2 = hspace.split(intv2)
+    hs12 = hs1.split(intv2)
+    hs21 = hs2.split(intv1)
+
+    print(hspace.repr_head())
+    print("1",hs1.repr_head())
+    print("2",hs2.repr_head())
+    print("12",hs12.repr_head())
+    print("21",hs21.repr_head())
+
     repl(terminals,nonterminals,nonterminals_vars_consts, seen, target_stop)
 
 def bup_enumerate(terminals,nonterminals, target_stop, seen, target_start=0):
