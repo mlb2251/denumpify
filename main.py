@@ -22,8 +22,14 @@ parser.add_argument('mode', nargs='?',
                     choices=['synth', 'freq', 'plot'],
                     default='synth',
                     help='mode to run in [default: synth]')
+parser.add_argument('--load', nargs=1,
+                    help='file to load from')
 parser.add_argument('--no-debug', action='store_true',
                     help='disable mlb.debug')
+parser.add_argument('-w', type=int, default=10,
+                    help='weight to search up to')
+parser.add_argument('--no-obs-eq', action='store_true',
+                    help='disable observational equivalence')
 parser.add_argument('--no-headless', action='store_true',
                     help='disable headless browsing')
 cfg = parser.parse_args()

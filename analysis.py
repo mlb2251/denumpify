@@ -53,7 +53,7 @@ class HSpace:
     self.largest_group = max(len(exprs) for exprs in self.groups.values())
     self.avg_group = self.num_exprs/len(self.groups)
   def __repr__(self):
-    return f'HSpace(largest={self.largest_group}, avg={self.avg_group:.1f}, num_exprs={self.num_exprs}, num_groups={len(self.groups)})'
+    return f'HSpace(largest={self.largest_group}, avg={self.avg_group:.3f}, num_exprs={self.num_exprs}, num_groups={len(self.groups)})'
   def head(self, n=10):
     hs = [(len(exprs),outputs) for outputs,exprs in self.groups.items()]
     hs.sort(key=lambda h: -h[0])

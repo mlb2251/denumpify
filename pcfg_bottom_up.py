@@ -9,7 +9,11 @@ from copy import deepcopy
 from util import *
 from fastcore.basics import ifnone
 
-def pcfg_bottom_up(fns,cfg):
+cfg = None
+
+def pcfg_bottom_up(fns,_cfg):
+    global cfg
+    cfg = _cfg
     priors,consts,_,fns = pre_synth(fns,cfg)
 
 
@@ -19,7 +23,7 @@ def pcfg_bottom_up(fns,cfg):
     #priors = {k:-1 for k,v in priors.items()}
 
     env = {
-        'x': np.ones((2,3)),
+        'x': np.random.rand(2,3),
         'y': np.array([[1,2,3],[4,5,6]]),
     }
 
@@ -62,31 +66,42 @@ def pcfg_bottom_up(fns,cfg):
     uni = get_best_unigram(progs,nonterminals_vars_consts)
     update_priors(uni)
     int_priors(nonterminals_vars_consts)
-    target_stop = -10
+    target_stop = -cfg.w
     bup_enumerate(terminals,nonterminals,target_stop,seen)
+
+
+
 
     from analysis import HSpace,IOIntervention
     hspace = HSpace.new(terminals)
 
-    intv1 = IOIntervention({ # example bad partitioner probably?
+    intvs = [
+        IOIntervention({
         'x': np.zeros((2,3)),
         'y': np.zeros((2,3)),
-    })
-    intv2 = IOIntervention({ # example bad partitioner probably?
+        }),
+        IOIntervention({
         'x': np.eye(4),
         'y': np.ones((2,3)),
-    })
-
-    hs1 = hspace.split(intv1)
-    hs2 = hspace.split(intv2)
-    hs12 = hs1.split(intv2)
-    hs21 = hs2.split(intv1)
+        }),
+        IOIntervention({
+        'x': np.eye(4),
+        'y': 2,
+        }),
+        IOIntervention({
+        'x': np.random.rand(2,3),
+        'y': np.zeros((3,3)),
+        }),
+        IOIntervention({
+        'x': np.array([[1,2,3],[1,2,3]]),
+        'y': np.zeros((3,3)),
+        }),
+    ]
 
     print(hspace.repr_head())
-    print("1",hs1.repr_head())
-    print("2",hs2.repr_head())
-    print("12",hs12.repr_head())
-    print("21",hs21.repr_head())
+    for i,intv in enumerate(intvs):
+        hspace = hspace.split(intv)
+        print(i, hspace.repr_head())
 
     repl(terminals,nonterminals,nonterminals_vars_consts, seen, target_stop)
 
@@ -119,7 +134,8 @@ def bup_enumerate(terminals,nonterminals, target_stop, seen, target_start=0):
                 if check_seen in seen:
                     # TODO check relative lls maybe just to be safe
                     #assert seen[check_seen].ll >= expr.ll
-                    continue # observational equivalence
+                    if not cfg.no_obs_eq:
+                        continue # observational equivalence
                 seen[check_seen] = expr
                 # TODO do some observational equiv checking here (careful to assert relative lls so you dont throw out an optimal choice)
                 terminals.append(expr)
