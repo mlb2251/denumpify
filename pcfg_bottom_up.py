@@ -15,12 +15,12 @@ def pcfg_bottom_up(fns,_cfg):
     global cfg
     cfg = _cfg
     priors,consts,_,fns = pre_synth(fns,cfg)
-
-
+    
     priors = {k:int(v) for k,v in priors.items()}
 
 
-    #priors = {k:-1 for k,v in priors.items()}
+    if cfg.prior == 'uniform':
+        priors = {k:-1 for k,v in priors.items()}
 
     env = {
         'x': np.random.rand(2,3),
@@ -59,17 +59,15 @@ def pcfg_bottom_up(fns,_cfg):
 
     seen = {Val(t.val):t for t in terminals}
 
-    progs = user_inputs()
-    progs = [parse(prog,nonterminals_vars_consts) for prog in progs]
+    if cfg.prior == 'custom':
+        progs = user_inputs()
+        progs = [parse(prog,nonterminals_vars_consts) for prog in progs]
+        uni = get_best_unigram(progs,nonterminals_vars_consts)
+        update_priors(uni)
+        int_priors(nonterminals_vars_consts)
 
-    
-    uni = get_best_unigram(progs,nonterminals_vars_consts)
-    update_priors(uni)
-    int_priors(nonterminals_vars_consts)
     target_stop = -cfg.w
     bup_enumerate(terminals,nonterminals,target_stop,seen)
-
-
 
 
     from analysis import HSpace,IOIntervention
@@ -109,7 +107,6 @@ def bup_enumerate(terminals,nonterminals, target_stop, seen, target_start=0):
     assert target_stop < 0
     target = target_start
     while target >= target_stop:
-        print(f"{target =} {len(terminals) =}")
         terminals.sort(key=lambda x:-x.ll)
         frozen_terminals = terminals[:] # this shallow copy by "[:]" is v imp
         check_len = len(frozen_terminals)
@@ -142,6 +139,7 @@ def bup_enumerate(terminals,nonterminals, target_stop, seen, target_start=0):
 
 
 
+        print(f"Finished {target =} to yield a total of {len(terminals) =}")
         target -= 1
     terminals.sort(key=lambda x:-x.ll)
     for t in terminals[::-1]:

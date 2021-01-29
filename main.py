@@ -24,6 +24,9 @@ parser.add_argument('mode', nargs='?',
                     help='mode to run in [default: synth]')
 parser.add_argument('--load', nargs=1,
                     help='file to load from')
+parser.add_argument('--prior',
+                    choices=['uniform', 'custom', 'google'],
+                    default='custom')
 parser.add_argument('--no-debug', action='store_true',
                     help='disable mlb.debug')
 parser.add_argument('-w', type=int, default=10,
